@@ -1,0 +1,53 @@
+#__pycache__/
+#model/__pycache__/
+#adsb_preprocess/__pycache__/
+#dataset/*
+#!dataset/.gitkeep
+#saved_models/*
+#!saved_models/.gitkeep
+
+
+
+# =========== 1. 你原有的规则 (保持不变) ===========
+__pycache__/
+model/__pycache__/
+adsb_preprocess/__pycache__/
+dataset/*
+!dataset/.gitkeep
+saved_models/*
+!saved_models/.gitkeep
+
+# =========== 2. 新增：忽略生成的图片和可视化结果 ===========
+# 避免你每次运行测试生成的几百张图片被上传
+images/
+traj_vis/
+*.png
+*.jpg
+*.svg
+
+# =========== 3. 新增：忽略日志和临时文件 ===========
+*.log
+*.txt
+# 排除 requirements.txt，这个需要保留
+!requirements.txt
+!required_packages.txt
+
+# =========== 4. 新增：忽略散落在根目录的模型权重 ===========
+# 防止有些代码把 .pt 文件直接保存在根目录
+*.pt
+*.pth
+*.ckpt
+
+# =========== 5. 新增：忽略环境和编辑器配置 ===========
+# 虚拟环境
+venv/
+env/
+# PyCharm / VSCode 配置
+.idea/
+.vscode/
+# Mac 系统文件
+.DS_Store
+
+# =========== 6. 新增：忽略本地备份文件夹 ===========
+# 如果你用了我之前给你的 backup_manager.py
+code_snapshots/

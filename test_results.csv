@@ -1,0 +1,6 @@
+ADE_Loss,FDE_Loss,ablation_description
+0.848813,0.937401,Baseline Model:τ=1
+0.540539,0.696805,Baseline Model:τ=3
+0.294252,0.515729,Baseline Model:τ=5
+0.575323,0.705394,Baseline Model:τ=7
+
