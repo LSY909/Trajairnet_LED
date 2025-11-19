@@ -196,9 +196,10 @@ def train():
             # optimizer.zero_grad()
             # loss_dist, loss_uncertainty = model(obs_traj,pred_traj, adj[0],torch.transpose(context,1,2),
             #                       all_obs_traj_search_results, all_pred_traj_search_results)
-            optimizer.zero_grad()
-            loss_dist, loss_uncertainty = model(obs_traj, pred_traj, adj[0], context.transpose(1, 2), [], [],
-                                        route_priors=route_priors)
+
+            loss_dist, loss_uncertainty = model(obs_traj, pred_traj, adj[0], context.transpose(1, 2),
+                                                all_obs_traj_search_results, all_pred_traj_search_results,
+                                                route_priors=route_priors)  # <--- 传入
 
             alpha = 100
 
