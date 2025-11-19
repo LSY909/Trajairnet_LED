@@ -1,0 +1,10 @@
+1.修改前备份
+python git_sync.py "BACKUP: <这里写自己的备份说明>"
+2.修改后保存
+python git_sync.py "FEATURE: <这里写自己的修改说明>"
+3.查看提交历史
+git log --oneline
+4.执行回滚
+git reset --hard <备份的ID点>
+5.强制同步到远程（会丢失修改-尽量不用）
+git push origin main --force

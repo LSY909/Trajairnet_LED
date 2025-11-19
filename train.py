@@ -161,7 +161,7 @@ def train():
             #
             #     all_obs_traj_search_results.append(obs_traj_search_results)
             #     all_pred_traj_search_results.append(pred_traj_search_results)
-            
+
             # 检索
             for bs in range(obs_traj.shape[0]):
                 emb=embedder.embed(obs_traj[bs].detach().cpu().numpy())
