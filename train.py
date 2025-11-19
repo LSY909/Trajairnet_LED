@@ -161,20 +161,21 @@ def train():
             #
             #     all_obs_traj_search_results.append(obs_traj_search_results)
             #     all_pred_traj_search_results.append(pred_traj_search_results)
+            
             # 检索
-            # for bs in range(obs_traj.shape[0]):
-            #     emb=embedder.embed(obs_traj[bs].detach().cpu().numpy())
-            #     all_obs_traj_search_results.append(rag.search_batch(emb.astype(np.float32),k=20))
-            # # 聚类
-            # raw = np.array([[np.array(i['pred_data']).T if np.array(i['pred_data']).shape[0] == 3 else np.array(
-            #     i['pred_data']) for i in a] for s in all_obs_traj_search_results for a in s])
-            # rel = raw - raw[:, :, 0:1, :]
-            # ctrs = np.array(
-            #     [GaussianMixture(3, 'diag', random_state=0).fit(r.reshape(20, -1)).means_.reshape(3, 12, 3) for r in
-            #      rel])
-            # route_priors = torch.tensor(
-            #     ctrs.reshape(*obs_traj.shape[:2], 3, 12, 3) + obs_traj.detach().cpu().numpy()[:, :, -1, None,
-            #                                                   None]).float().to(device)
+            for bs in range(obs_traj.shape[0]):
+                emb=embedder.embed(obs_traj[bs].detach().cpu().numpy())
+                all_obs_traj_search_results.append(rag.search_batch(emb.astype(np.float32),k=20))
+            # 聚类
+            raw = np.array([[np.array(i['pred_data']).T if np.array(i['pred_data']).shape[0] == 3 else np.array(
+                i['pred_data']) for i in a] for s in all_obs_traj_search_results for a in s])
+            rel = raw - raw[:, :, 0:1, :]
+            ctrs = np.array(
+                [GaussianMixture(3, 'diag', random_state=0).fit(r.reshape(20, -1)).means_.reshape(3, 12, 3) for r in
+                 rel])
+            route_priors = torch.tensor(
+                ctrs.reshape(*obs_traj.shape[:2], 3, 12, 3) + obs_traj.detach().cpu().numpy()[:, :, -1, None,
+                                                              None]).float().to(device)
 
 
             num_agents = obs_traj.shape[1]
