@@ -20,8 +20,17 @@ class LEDInitializer(nn.Module):
 		self.output_dim = t_f * d_f * k_pred
 		self.fut_len = t_f
 
+		'''
+		新增航线的先验信息的编码器（prior Encoder)
+		作用：将原始航线坐标压缩成特征向量
+		输入维度计算: 3条航线 * 12个点 * 3维 = 108
+		'''
+		# Map Feature 维度：64 (来自 TrajAirNet 的 MapEncoder 输出)
+		self.prior_input_dim = 64
+		self.prior_feature_dim = 32  # 压缩后的特征大小
+		self.prior_encoder = MLP(self.prior_input_dim, self.prior_feature_dim, hid_feat=(64, 64), activation=nn.ReLU())
 
-		## 建模智能体之间的交互信息
+		# 建模智能体之间的交互信息
 		self.social_encoder = social_transformer(t_h)
 		## 建模目标自身历史特征 方差、均值、尺度预测结果
 		self.ego_var_encoder = st_encoder()
@@ -30,30 +39,55 @@ class LEDInitializer(nn.Module):
 
 		self.scale_encoder = MLP(1, 32, hid_feat=(4, 16), activation=nn.ReLU())
 
+		'''
+				解码器输入维度：均值分支需要融合先验：Ego(256) + Social(256) + Prior(32) = 544
+		'''
+
 		self.var_decoder = MLP(256*2+32, self.output_dim, hid_feat=(1024, 1024), activation=nn.ReLU())
-		self.mean_decoder = MLP(256*2, t_f * d_f, hid_feat=(256, 128), activation=nn.ReLU())
+		self.mean_decoder = MLP(256 * 2 + self.prior_feature_dim, t_f * d_f, hid_feat=(256, 128), activation=nn.ReLU())
 		self.scale_decoder = MLP(256*2, 1, hid_feat=(256, 128), activation=nn.ReLU())
 
 
-	def forward(self, x, mask=None,route_priors=None):
+	def forward(self, x, mask=None,map_features=None):
 		'''
 		x: batch size, t_p, 6
 		route_priors: [Batch, Agent, 3, 12, 3]
 		'''
+		'''
+		      x: 历史轨迹, 形状 [Batch*Agent, T, 3]
+		      mask: 邻接矩阵
+		      map_features: 航线特征, 形状 [Batch*Agent, 64] (来自 TrajAirNet 的 Map Encoder 输出)
+		'''
 		var_num  = 3
 		## mask用来屏蔽无效邻居
 		mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
-		social_embed = self.social_encoder(x, mask)
-		social_embed = social_embed.squeeze(1)
+		'''修改'''
+		# social_embed = self.social_encoder(x, mask)
+		# social_embed = social_embed.squeeze(1)
+		# B, 256
+		social_embed = self.social_encoder(x, mask).squeeze(1)  # [B*A, 256]
+		ego_var_embed = self.ego_var_encoder(x)
+		ego_mean_embed = self.ego_mean_encoder(x)  # [B*A, 256]
+		ego_scale_embed = self.ego_scale_encoder(x)
+
+		'''
+		处理航线先验
+		'''
+		if map_features is not None:
+			# 1. 编码特征 (64维 -> 32维)
+			priors_embed = self.prior_encoder(map_features)  # [B*A, 32]
+		else:
+			# 如果没传 ，用全0填充
+			priors_embed = torch.zeros(x.size(0), self.prior_feature_dim).to(x.device)
 		# B, 256
 
-		ego_var_embed = self.ego_var_encoder(x)
-		ego_mean_embed = self.ego_mean_encoder(x)
-		ego_scale_embed = self.ego_scale_encoder(x)
-		# B, 256
-		# ====== 均值分支 ======
-		mean_total = torch.cat((ego_mean_embed, social_embed), dim=-1)
+		'''有航线先验信息后均值信息需要修改'''
+		# # ====== 均值分支 ======
+		mean_total = torch.cat((ego_mean_embed, social_embed, priors_embed), dim=-1)
 		guess_mean = self.mean_decoder(mean_total).contiguous().view(-1, self.fut_len, var_num)
+
+
+
 		# ====== 方差分支 ======
 		scale_total = torch.cat((ego_scale_embed, social_embed), dim=-1)
 		guess_scale = self.scale_decoder(scale_total)

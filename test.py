@@ -55,6 +55,10 @@ def main():
     parser.add_argument('--traj_dim', type=int , default=3)
     parser.add_argument('--agent_num', type=int , default=3)
 
+    # RAG 参数
+    parser.add_argument('--k_retrieve', type=int, default=100)
+    parser.add_argument('--n_clusters', type=int, default=3)
+
     args=parser.parse_args()
 
 
@@ -69,23 +73,23 @@ def main():
     # loader_test = DataLoader(dataset_test,batch_size=64,num_workers=4,shuffle=True,collate_fn=seq_collate)
     loader_test = DataLoader(dataset_test,batch_size=8,num_workers=4,shuffle=True,collate_fn=seq_collate_with_padding)
 
-    rag = TrajectoryDataset_RAG("./dataset/rag_files", obs_len=args.obs, pred_len=args.preds, step=args.preds_step, delim=args.delim).rag_system
+    # 初始化 RAG
+    print("Initializing RAG System for Testing...")
+    rag = TrajectoryDataset_RAG("./dataset/rag_files", obs_len=args.obs, pred_len=args.preds, step=args.preds_step,
+                                delim=args.delim).rag_system
+    embedder = TimeSeriesEmbedder()  # 新增：初始化 Embedder
 
     ##Load model
     model = TrajAirNet(args)
     model.to(device)
 
-    # model_path =  os.getcwd() + args.model_dir + "model_" + args.dataset_name + "_" + str(args.epoch) + ".pt"
-    # model_path =  os.getcwd() + args.model_dir + "model_traj_air_ZH9102_5.pt"
     model_path = os.path.join(os.getcwd() + args.model_dir + f"model_{args.dataset_name}_{args.epoch}.pt")
-    #model_path =  os.getcwd() + args.model_dir + "model_7days1_1.pt"
-
 
     checkpoint = torch.load(model_path, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
 
 
-    test_ade_loss, test_fde_loss = test(model,loader_test,device, rag)
+    test_ade_loss, test_fde_loss = test(model,loader_test,device, rag, embedder)
 
     print("Test ADE Loss: ",test_ade_loss,"Test FDE Loss: ",test_fde_loss)
 
@@ -100,7 +104,7 @@ def RMSE(pred, true):
 def MAPE(pred, true):
     return np.mean(np.abs((pred - true) / true))
 
-def test(model,loader_test,device,rag):
+def test(model,loader_test,device,rag, embedder):
     tot_ade_loss = 0
     tot_fde_loss = 0
     tot_batch = 0
@@ -111,8 +115,8 @@ def test(model,loader_test,device,rag):
         obs_traj_all , pred_traj_all, obs_traj_rel_all, pred_traj_rel_all, context, seq_start  = batch
         batch_size = obs_traj_all.shape[0]
 
-        all_obs_traj_search_results = []
-        all_pred_traj_search_results = []
+        # all_obs_traj_search_results = []
+        # all_pred_traj_search_results = []
 
         num_agents = obs_traj_all.shape[1]
         adj = torch.ones((num_agents, num_agents))
@@ -120,22 +124,9 @@ def test(model,loader_test,device,rag):
         best_ade_loss = float('inf')
         best_fde_loss = float('inf')
 
-        # # 只考虑特定数量的agent
-        # if num_agents == 3:
-        #     tot_batch += 1
-        #     pass
-        # else:
-        #     continue
 
-        # 多次随机生成噪声
-        # for i in range(5):
-        # z = torch.randn([1,1 ,128]).to(device)
-
-        # recon_y_all = model.inference(torch.transpose(obs_traj_all,1,2),z,adj,torch.transpose(context,1,2),
-        
-        # obs_traj_search_results, pred_traj_search_results)
         recon_y_all = model.inference(obs_traj_all, pred_traj_all, adj[0], torch.transpose(context, 1, 2),
-                                            all_obs_traj_search_results, all_pred_traj_search_results)
+                                      rag_system=rag, embedder=embedder)
 
         recon_y_all = torch.reshape(recon_y_all,(batch_size,
                                                  num_agents,

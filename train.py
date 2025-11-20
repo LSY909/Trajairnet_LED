@@ -153,10 +153,6 @@ def train():
             batch = [tensor.to(device) for tensor in batch]
 
             obs_traj , pred_traj, obs_traj_rel, pred_traj_rel, context, seq_start = batch
-            # 这个也要改，改为在之前就检索，或者之后检索
-            all_obs_traj_search_results = []
-            all_pred_traj_search_results = []
-
             num_agents = obs_traj.shape[1]
             adj = torch.ones((num_agents,num_agents))
 
@@ -203,7 +199,7 @@ def train():
             print("Starting Testing....")
 
             model.eval()
-            test_ade_loss, test_fde_loss = test(model,loader_test,device,rag)
+            test_ade_loss, test_fde_loss = test(model,loader_test,device,rag,embedder)
 
             print("EPOCH: ",epoch,"Train Loss: ",loss,"Test ADE Loss: ",test_ade_loss,"Test FDE Loss: ",test_fde_loss)
 

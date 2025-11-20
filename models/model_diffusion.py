@@ -79,23 +79,20 @@ class TransformerDenoisingModel(Module):
         self.linear = ConcatSquashLinear(context_dim//2, 3, context_dim+3)
 
 
-        # self.concat1 = ConcatSquashLinear(2, 2*context_dim, context_dim+3)
-        # self.layer = nn.TransformerEncoderLayer(d_model=2*context_dim, nhead=2, dim_feedforward=2*context_dim)
-        # self.transformer_encoder = nn.TransformerEncoder(self.layer, num_layers=tf_layer)
-        # self.concat3 = ConcatSquashLinear(2*context_dim,context_dim,context_dim+3)
-        # self.concat4 = ConcatSquashLinear(context_dim,context_dim//2,context_dim+3)
-        # self.linear = ConcatSquashLinear(context_dim//2, 2, context_dim+3)
-
-
-    def forward(self, x, beta, context, mask):
+    def forward(self, x, beta, context, mask,map_features=None):
         batch_size = x.size(0)
-        beta = beta.view(batch_size, 1, 1)          # (B, 1, 1)
+        beta = beta.view(batch_size, 1, 1)  # (B, 1, 1)
         mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
-        context = self.encoder_context(context, mask)
-        # context = context.view(batch_size, 1, -1)   # (B, 1, F)
+        '''判断是否有map_feature'''
+        if map_features is not None:
+            final_ctx = map_features.unsqueeze(1)  # [B, 1, 256]
+        else:
+            # 如果没有 Map Feature，就使用原始的 Social Context
+            final_ctx = self.encoder_context(context, mask)
 
+        # context = context.view(batch_size, 1, -1)   # (B, 1, F)
         time_emb = torch.cat([beta, torch.sin(beta), torch.cos(beta)], dim=-1)  # (B, 1, 3)
-        ctx_emb = torch.cat([time_emb, context], dim=-1)    # (B, 1, F+3)
+        ctx_emb = torch.cat([time_emb, final_ctx], dim=-1)    # (B, 1, F+3)
         
         x = self.concat1(ctx_emb, x)
         final_emb = x.permute(1,0,2)
@@ -106,7 +103,7 @@ class TransformerDenoisingModel(Module):
         trans = self.concat4(ctx_emb, trans)
         return self.linear(ctx_emb, trans)
     
-    def generate_accelerate(self, x, beta, context, mask):
+    def generate_accelerate(self, x, beta, context, mask, map_features=None):
         #pdb.set_trace()
 
         batch_size = x.size(0)
@@ -115,13 +112,18 @@ class TransformerDenoisingModel(Module):
 
         beta = beta.view(beta.size(0), 1, 1)          # (B, 1, 1)
         mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
-        context = self.encoder_context(context, mask)
+
+        # 逻辑：map_features 就是融合了航线信息的 final_context
+        if map_features is not None:
+            final_ctx = map_features.unsqueeze(1)  # [B, 1, 256]
+        else:
+            final_ctx = self.encoder_context(context, mask)
         # context = context.view(batch_size, 1, -1)   # (B, 1, F)
         #pdb.set_trace()
         time_emb = torch.cat([beta, torch.sin(beta), torch.cos(beta)], dim=-1)  # (B, 1, 3)
         # time_emb: [11, 1, 3]
         # context: [11, 1, 256]
-        ctx_emb = torch.cat([time_emb, context], dim=-1).repeat(1, sample_num, 1).unsqueeze(2)
+        ctx_emb = torch.cat([time_emb, final_ctx], dim=-1).repeat(1, sample_num, 1).unsqueeze(2)
         # x: 11, 10, 20, 2
         # ctx_emb: 11, 10, 1, 259
         x = self.concat1.batch_generate(ctx_emb, x).contiguous().view(-1, points_num, 512)
