@@ -1,4 +1,3 @@
-
 import argparse
 import os
 from datetime import datetime
@@ -162,20 +161,20 @@ def train():
             #     all_obs_traj_search_results.append(obs_traj_search_results)
             #     all_pred_traj_search_results.append(pred_traj_search_results)
 
-            # 检索
-            for bs in range(obs_traj.shape[0]):
-                emb=embedder.embed(obs_traj[bs].detach().cpu().numpy())
-                all_obs_traj_search_results.append(rag.search_batch(emb.astype(np.float32),k=20))
-            # 聚类
-            raw = np.array([[np.array(i['pred_data']).T if np.array(i['pred_data']).shape[0] == 3 else np.array(
-                i['pred_data']) for i in a] for s in all_obs_traj_search_results for a in s])
-            rel = raw - raw[:, :, 0:1, :]
-            ctrs = np.array(
-                [GaussianMixture(3, 'diag', random_state=0).fit(r.reshape(20, -1)).means_.reshape(3, 12, 3) for r in
-                 rel])
-            route_priors = torch.tensor(
-                ctrs.reshape(*obs_traj.shape[:2], 3, 12, 3) + obs_traj.detach().cpu().numpy()[:, :, -1, None,
-                                                              None]).float().to(device)
+            # # 检索
+            # for bs in range(obs_traj.shape[0]):
+            #     emb=embedder.embed(obs_traj[bs].detach().cpu().numpy())
+            #     all_obs_traj_search_results.append(rag.search_batch(emb.astype(np.float32),k=20))
+            # # 聚类
+            # raw = np.array([[np.array(i['pred_data']).T if np.array(i['pred_data']).shape[0] == 3 else np.array(
+            #     i['pred_data']) for i in a] for s in all_obs_traj_search_results for a in s])
+            # rel = raw - raw[:, :, 0:1, :]
+            # ctrs = np.array(
+            #     [GaussianMixture(3, 'diag', random_state=0).fit(r.reshape(20, -1)).means_.reshape(3, 12, 3) for r in
+            #      rel])
+            # route_priors = torch.tensor(
+            #     ctrs.reshape(*obs_traj.shape[:2], 3, 12, 3) + obs_traj.detach().cpu().numpy()[:, :, -1, None,
+            #                                                   None]).float().to(device)
 
 
             num_agents = obs_traj.shape[1]
@@ -192,14 +191,13 @@ def train():
 
 
             # ####################################DiffusionLOSS######################
-            '''这里也要改'''
-            # optimizer.zero_grad()
-            # loss_dist, loss_uncertainty = model(obs_traj,pred_traj, adj[0],torch.transpose(context,1,2),
-            #                       all_obs_traj_search_results, all_pred_traj_search_results)
+            optimizer.zero_grad()
+            loss_dist, loss_uncertainty = model(obs_traj,pred_traj, adj[0],torch.transpose(context,1,2),
+                                  all_obs_traj_search_results, all_pred_traj_search_results)
 
-            loss_dist, loss_uncertainty = model(obs_traj, pred_traj, adj[0], context.transpose(1, 2),
-                                                all_obs_traj_search_results, all_pred_traj_search_results,
-                                                route_priors=route_priors)  # <--- 传入
+            # loss_dist, loss_uncertainty = model(obs_traj, pred_traj, adj[0], context.transpose(1, 2),
+            #                                     all_obs_traj_search_results, all_pred_traj_search_results,
+            #                                     route_priors=route_priors)  # <--- 传入
 
             alpha = 100
 

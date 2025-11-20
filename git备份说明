@@ -8,3 +8,9 @@ git log --oneline
 git reset --hard <备份的ID点>
 5.强制同步到远程（会丢失修改-尽量不用）
 git push origin main --force
+
+
+python git_sync.py "BACKUP:"
+python git_sync.py "FEATURE: "
+git log --oneline
+git reset --hard <备份的ID点>

@@ -94,9 +94,7 @@ class TrajAirNet(nn.Module):
         self.alphas_bar_sqrt = torch.sqrt(self.alphas_prod)
         self.one_minus_alphas_bar_sqrt = torch.sqrt(1 - self.alphas_prod)
 
-        # '''这里是聚类的数量'''
-        # n_clusters = 3
-        # self.kmeans = KMeans(n_clusters=n_clusters)
+
 
     def init_weights(self):
         self.linear_decoder.weight.data.normal_(0, 0.05)
