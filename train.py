@@ -95,15 +95,18 @@ def train():
     # 智能体数量为3
     parser.add_argument('--agent_num', type=int , default=3)
 
+    '''
+    添加的RAG参数
+    '''
+    # RAG 参数
+    parser.add_argument('--k_retrieve', type=int, default=100)
+    parser.add_argument('--n_clusters', type=int, default=3)
+
 
     # 解析命令行参数
     args=parser.parse_args()
     os.environ['CUDA_VISIBLE_DEVICES'] = '3'
-    ##Select device
-
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-    ##Load test and train data加载数据
     datapath = os.getcwd() + args.dataset_folder + args.dataset_name + "/processed_data/"
 
     print("Loading Train Data from ",datapath + "train")
@@ -112,8 +115,12 @@ def train():
     print("Loading Test Data from ",datapath + "test")
     dataset_test = TrajectoryDataset(datapath + "test", obs_len=args.obs, pred_len=args.preds, step=args.preds_step, delim=args.delim)
     # 初始化RAG（检索增强生成）系统
-    rag = TrajectoryDataset_RAG("./dataset/rag_file_7days2", obs_len=args.obs, pred_len=args.preds, step=args.preds_step, delim=args.delim).rag_system
-
+    #rag = TrajectoryDataset_RAG("./dataset/rag_file_7days2", obs_len=args.obs, pred_len=args.preds, step=args.preds_step, delim=args.delim).rag_system
+    '''添加的初始化检索系统'''
+    print("Initializing RAG System...")
+    rag = TrajectoryDataset_RAG("./dataset/rag_file_7days2", obs_len=args.obs, pred_len=args.preds,
+                                step=args.preds_step, delim=args.delim).rag_system
+    embedder = TimeSeriesEmbedder()
     loader_train = DataLoader(dataset_train,batch_size=16,num_workers=4,shuffle=True,collate_fn=seq_collate_with_padding)
     loader_test = DataLoader(dataset_test,batch_size=16,num_workers=4,shuffle=True,collate_fn=seq_collate_with_padding)
 
@@ -150,50 +157,15 @@ def train():
             all_obs_traj_search_results = []
             all_pred_traj_search_results = []
 
-            # for bs in range(obs_traj.shape[0]):
-            #     # embedding
-            #     obs_traj_embed_batch = embedder.embed_batch(np.transpose(obs_traj[bs].cpu().numpy(),(0, 2, 1)))
-            #     pred_traj_embed_batch = embedder.embed_batch(np.transpose(pred_traj[bs].cpu().numpy(),(0, 2, 1)))
-            #     # retriver
-            #     obs_traj_search_results = rag.search_batch(obs_traj_embed_batch.astype(np.float32))
-            #     pred_traj_search_results = rag.search_batch(pred_traj_embed_batch.astype(np.float32))
-            #
-            #     all_obs_traj_search_results.append(obs_traj_search_results)
-            #     all_pred_traj_search_results.append(pred_traj_search_results)
-
-            # # 检索
-            # for bs in range(obs_traj.shape[0]):
-            #     emb=embedder.embed(obs_traj[bs].detach().cpu().numpy())
-            #     all_obs_traj_search_results.append(rag.search_batch(emb.astype(np.float32),k=20))
-            # # 聚类
-            # raw = np.array([[np.array(i['pred_data']).T if np.array(i['pred_data']).shape[0] == 3 else np.array(
-            #     i['pred_data']) for i in a] for s in all_obs_traj_search_results for a in s])
-            # rel = raw - raw[:, :, 0:1, :]
-            # ctrs = np.array(
-            #     [GaussianMixture(3, 'diag', random_state=0).fit(r.reshape(20, -1)).means_.reshape(3, 12, 3) for r in
-            #      rel])
-            # route_priors = torch.tensor(
-            #     ctrs.reshape(*obs_traj.shape[:2], 3, 12, 3) + obs_traj.detach().cpu().numpy()[:, :, -1, None,
-            #                                                   None]).float().to(device)
-
-
             num_agents = obs_traj.shape[1]
             adj = torch.ones((num_agents,num_agents))
-
-            # optimizer.zero_grad()
-            # recon_y,m,var = model(torch.transpose(obs_traj,1,2),pred_traj, adj[0],torch.transpose(context,1,2),
-            #                       obs_traj_search_results, pred_traj_search_results)
-            # loss = 0
-            #
-            # for agent in range(num_agents):
-            #     loss += loss_func(recon_y[agent],torch.transpose(pred_traj[:,:,agent],0,1).unsqueeze(0),m[agent],var[agent])
 
 
 
             # ####################################DiffusionLOSS######################
             optimizer.zero_grad()
             loss_dist, loss_uncertainty = model(obs_traj,pred_traj, adj[0],torch.transpose(context,1,2),
-                                  all_obs_traj_search_results, all_pred_traj_search_results)
+                                  rag_system=rag,embedder=embedder)
 
             # loss_dist, loss_uncertainty = model(obs_traj, pred_traj, adj[0], context.transpose(1, 2),
             #                                     all_obs_traj_search_results, all_pred_traj_search_results,

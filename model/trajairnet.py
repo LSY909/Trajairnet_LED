@@ -3,6 +3,8 @@ import random
 import torch
 from sklearn.cluster import KMeans
 from torch import nn
+from sklearn.mixture import GaussianMixture # 引入 GMM
+
 
 from model.tcn_model import TemporalConvNet
 from model.batch_gat import GAT
@@ -16,6 +18,7 @@ import pdb
 
 from models.model_led_initializer import LEDInitializer as InitializationModel
 from models.model_diffusion import TransformerDenoisingModel as CoreDenoisingModel
+from model.Rag_embedder import TimeSeriesEmbedder # 引入 Embedder
 
 ## 去噪步数
 NUM_Tau = 5
@@ -94,21 +97,21 @@ class TrajAirNet(nn.Module):
         self.alphas_bar_sqrt = torch.sqrt(self.alphas_prod)
         self.one_minus_alphas_bar_sqrt = torch.sqrt(1 - self.alphas_prod)
 
-
+        '''
+        添加检索
+        '''
+        self.k_retrieve = getattr(args, 'k_retrieve', 100)
+        self.n_clusters = getattr(args, 'n_clusters', 3)
+        self.traj_dim = getattr(args, 'traj_dim', 3)
+        '''
+        添加结束
+        '''
 
     def init_weights(self):
         self.linear_decoder.weight.data.normal_(0, 0.05)
         self.context_linear.weight.data.normal_(0, 0.05)
         self.context_conv.weight.data.normal_(0, 0.1)
 
-
-    # def calculate_mask(self, obs_traj):
-    #     static_dist = 0.03
-    #     if obs_traj.size(0) <= 2:
-    #         mask = (obs_traj[:, -1] - obs_traj[:, -2]).div(1).norm(p=2, dim=-1) > static_dist
-    #     else:
-    #         mask = (obs_traj[:, -1] - obs_traj[:, -3]).div(2).norm(p=2, dim=-1) > static_dist
-    #     return mask
 
     # 根据目标最后时刻的距离计算他们之家的边权重
     def calculate_mask(self, obs_traj):
@@ -118,9 +121,26 @@ class TrajAirNet(nn.Module):
         dist_matrix = diff.norm(p=2, dim=-1)
         adj = F.softmax(-dist_matrix/1, dim=0)
         mask = dist_matrix < relation_dist
-        # mask.fill_diagonal_(False)    # 用处不大
         return adj,mask
 
+    def _get_route_priors(self, obs_traj, rag_system, embedder):
+
+        if rag_system is None or embedder is None:return None
+
+        obs_np = obs_traj.detach().cpu().numpy()
+        # flat_obs: (B*N, 11, 3)
+        search_res = rag_system.search_batch(
+            embedder.embed_batch(obs_np.reshape(-1, obs_traj.shape[2], 3).astype(np.float32)), k=self.k_retrieve)
+        # raw: (B*N, K, 12, 3), rel: (B*N, K, 12, 3)
+        raw = np.array([[np.array(i['pred_data']).T if np.array(i['pred_data']).shape[0] == 3 else np.array(
+            i['pred_data']) for i in s] for s in search_res])
+        rel = raw - raw[:, :, 0:1, :]
+        # ctrs: (B*N, N_CLUSTERS, 12, 3)
+        ctrs = np.array([GaussianMixture(self.n_clusters, 'diag', random_state=0).fit(
+            r.reshape(self.k_retrieve, -1)).means_.reshape(self.n_clusters, 12, 3) for r in rel])
+        return torch.tensor(
+            ctrs.reshape(*obs_traj.shape[:2], self.n_clusters, 12, 3) + obs_np[:, :, -1, None, None]).float().to(
+            obs_traj.device)
 
     def forward(self, x, y, adj, context, obs_traj_search_results, pred_traj_search_results, sort=False):
 
@@ -128,114 +148,10 @@ class TrajAirNet(nn.Module):
         agent_num = x.shape[1]
         topk = 5
 
-        '''
-        1、找到每个batch所检索的各个最相似的，比如x的维度是 256 * 7 * 3 * 11，那么找完之后的维度应该是 256* 7 * 5【最相似】 *3 * 11
-        2、考虑每个检索结果如何融合，256 * 7 * 5 * 3 *11，冲突消解？通过聚类
-        3、每个场景都可视化以下看看结果，是不是存在冲突的情况
-        '''
-
-        '''
-        1、拿到检索的数据进行聚类
-
-        '''
-        # var_num = x.shape[2]
-        # ob_len = x.shape[3]
-        # topk = obs_traj_search_results.shape[2]
-        # pre_len = obs_traj_search_results.shape[3]
-        #
-        # # 聚类
-        # obs_traj_search_results = torch.FloatTensor(obs_traj_search_results).to(x.device)
-        # searched_for_cluster = obs_traj_search_results.clone()
-        # end_points = torch.reshape(searched_for_cluster, (batch_size * agent_num, topk, pre_len, var_num))
-        # end_points = end_points[:, :, -1, :]
-        # centers = self.kmeans(end_points).centers
-        # centers_embed = self.centers_proj(centers)
-        # centers_embed_list = torch.split(centers_embed, 1, dim=1)
-        # 对观测进行编码
-        # x1 = torch.reshape(x, (batch_size * agent_num, var_num, ob_len))
-
-        '''到这里聚类的中心已经拿到了'''
-
-        # # # 把每个agent最相似的结果拿到
-        # batch_input_searched_traj = []
-        # batch_pred_searched_traj = []
-        # for i in range(batch_size):
-        #     # 每个场景，有agent_num个目标
-        #     scene = x[i].clone()        # 1 * 7 * 3 * 11
-        #     searched_scene = obs_traj_search_results[i]
-        #     scene_y = y[i].detach().clone()
-        #     # # 可视化场景,以检索的为主
-        #     # plt.figure(figsize=(10, 8))
-        #     # colors = ["Red", "Blue", "Green", "Orange", "Purple","Magenta","Cyan"]
-        #     scene_input_searched_input_traj = []
-        #     scene_pred_searched_input_traj = []
-        #     for agent in range(agent_num):
-        #         # 单个目标的轨迹和检索结果
-        #         # input_x = scene[agent].clone().cpu().numpy()
-        #         input_x = scene[agent].clone().cpu().numpy().transpose(1,0)
-        #         searched_x = searched_scene[agent]
-        #         # 检索最相似的未来轨迹
-        #         distance = []
-        #         all_searched_input_traj = []
-        #         all_searched_future_traj = []
-        #         # 用于存储满足角度条件的轨迹
-        #         index = []
-        #         for k in range(20):
-        #             searched_input_traj = np.array(searched_x[k]["data"])
-        #             traj1_dir = input_x[-1, :2] - input_x[0, :2]
-        #             traj2_dir = searched_input_traj[-1, :2] - searched_input_traj[0, :2]
-        #             cos_sim = np.dot(traj1_dir, traj2_dir) / (
-        #                     np.linalg.norm(traj1_dir) * np.linalg.norm(traj2_dir)
-        #             )
-        #             if cos_sim > 0.9:
-        #                 # 检索距离分数
-        #                 distance.append(searched_x[k]["distance"])
-        #                 # 检索最相似的输入
-        #                 searched_input_traj = torch.tensor(searched_input_traj).to(x.device)
-        #                 all_searched_input_traj.append(searched_input_traj)
-        #                 # 检索最相似的预测
-        #                 searched_future_traj = np.array(searched_x[k]["pred_data"])
-        #                 searched_future_traj = torch.tensor(searched_future_traj).to(x.device)
-        #                 all_searched_future_traj.append(searched_future_traj)
-        #                 index.append(k)
-        #             else:
-        #                 continue
-        #             # 可能为0
-        #             if len(all_searched_future_traj) == 5:
-        #                 break
-        #
-        #         if len(all_searched_future_traj) < 5:
-        #             for extra in range (5 - len(all_searched_future_traj)):
-        #                 searched_future_traj = np.array(searched_x[extra]["pred_data"])
-        #                 searched_future_traj = torch.tensor(searched_future_traj).to(x.device)
-        #                 all_searched_future_traj.append(searched_future_traj)
-        #         scene_pred_searched_input_traj.append(torch.stack(all_searched_future_traj))
-        #     # 暂时只使用检测的未来数据
-        #     batch_pred_searched_traj.append(torch.stack(scene_pred_searched_input_traj))
-        # batch_pred_searched = torch.stack(batch_pred_searched_traj)
-        # batch_pred_searched = torch.reshape(batch_pred_searched, (batch_size * agent_num * topk,
-        #                                                           batch_pred_searched.shape[3],
-        #                                                           batch_pred_searched.shape[4]))
-        # batch_pred_searched = batch_pred_searched.permute(0,2,1)
-        # batch_pred_encoded = self.tcn_encoder_similarest(batch_pred_searched.to(torch.float32))
-        # batch_pred_encoded = torch.reshape(batch_pred_encoded, (batch_size,
-        #                                                         agent_num,
-        #                                                         topk,
-        #                                                         batch_pred_encoded.shape[1],
-        #                                                         batch_pred_encoded.shape[2]))
-        # f_agg = self.mlp(batch_pred_encoded).squeeze()
-        #
-        # # 调整输入的维度为（batch_size * agent_num） * 变量数 * 轨迹点长度
-        # x1 = torch.reshape(x,(batch_size * agent_num, x.shape[2],x.shape[3]))
-        # encoded_x = self.tcn_encoder_x(x1)
-        # encoded_x = torch.reshape(encoded_x,(batch_size, agent_num, encoded_x.shape[1],encoded_x.shape[2]))
-        # f = torch.cat((encoded_x, f_agg),dim=-1)
-        # # gat_out的维度是 32 * 7 * 27
-        # gat_output = self.gat(torch.reshape(f,(batch_size,agent_num,f.shape[2] * f.shape[3])),adj.to(x.device))
-
+        '''获取航线先验'''
+        route_priors = self._get_route_priors(x, rag_system, embedder)
 
         # 后面仿照LED方法调整数据
-
         #pdb.set_trace()
         fut_traj = torch.reshape(y,(batch_size * agent_num, y.shape[2],y.shape[3]))
         fut_traj = fut_traj.permute(0,2,1)
@@ -246,6 +162,8 @@ class TrajAirNet(nn.Module):
             traj_mask[i * agent_num:(i + 1) * agent_num, i * agent_num:(i + 1) * agent_num] = 1.
         sample_prediction, mean_estimation, variance_estimation = self.model_initializer(past_traj, traj_mask)
         # 对应论文框架图相乘部分内容
+        sample_prediction, mean_estimation, variance_estimation = self.model_initializer(past_traj, traj_mask,
+                                                                                         route_priors)
         sample_prediction = torch.exp(variance_estimation / 2)[
                                 ..., None, None] * sample_prediction / sample_prediction.std(dim=1).mean(dim=(1, 2))[:,
                                                                        None, None, None]
@@ -276,6 +194,11 @@ class TrajAirNet(nn.Module):
         3、每个场景都可视化以下看看结果，是不是存在冲突的情况
 
         '''
+
+        '''
+        RAG/GMM 聚类
+        '''
+        route_priors = self._get_route_priors(x, rag_system, embedder)
         # 后面仿照LED方法调整数据
         fut_traj = torch.reshape(y, (batch_size * agent_num, y.shape[2], y.shape[3]))
         fut_traj = fut_traj.permute(0, 2, 1)
@@ -329,6 +252,7 @@ class TrajAirNet(nn.Module):
             betas = torch.linspace(-6, 6, n_timesteps)
             betas = torch.sigmoid(betas) * (end - start) + start
         return betas
+    
     def noise_estimation_loss(self, x, y_0, mask):
         batch_size = x.shape[0]
         # Select a random step for each example

@@ -35,9 +35,10 @@ class LEDInitializer(nn.Module):
 		self.scale_decoder = MLP(256*2, 1, hid_feat=(256, 128), activation=nn.ReLU())
 
 
-	def forward(self, x, mask=None):
+	def forward(self, x, mask=None,route_priors=None):
 		'''
 		x: batch size, t_p, 6
+		route_priors: [Batch, Agent, 3, 12, 3]
 		'''
 		var_num  = 3
 		## mask用来屏蔽无效邻居
