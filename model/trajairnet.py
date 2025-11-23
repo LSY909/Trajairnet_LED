@@ -52,6 +52,7 @@ class TrajAirNet(nn.Module):
         self.tcn_encoder_y = TemporalConvNet(input_size, num_channels, kernel_size=tcn_kernel_size, dropout=dropout)
         self.tcn_encoder_search = TemporalConvNet(input_size, num_channels, kernel_size=tcn_kernel_size,
                                                   dropout=dropout)
+
         self.cvae = CVAE(encoder_layer_sizes=cvae_encoder, latent_size=args.cvae_hidden,
                          decoder_layer_sizes=cvae_decoder, conditional=True, num_labels=gat_out + gat_in)
 
