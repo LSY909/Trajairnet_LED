@@ -83,9 +83,7 @@ class TrajAirNet(nn.Module):
         self.alphas_bar_sqrt = torch.sqrt(self.alphas_prod)
         self.one_minus_alphas_bar_sqrt = torch.sqrt(1 - self.alphas_prod)
 
-        # ============================================================
-        #  Agent-Map 交互 (航线特征融合)
-        # ============================================================
+        '''agent-map'''
         self.k_retrieve = getattr(args, 'k_retrieve', 20)
         self.n_clusters = getattr(args, 'n_clusters', 3)
         self.traj_dim = getattr(args, 'traj_dim', 3)
@@ -129,7 +127,6 @@ class TrajAirNet(nn.Module):
         return adj, mask
 
     def _get_route_priors(self, obs_traj, rag_system, embedder):
-        def _get_route_priors(self, obs_traj, rag_system, embedder):
             if rag_system is None or embedder is None: return None
             # 1.  (B, N, 11, 3)
             if obs_traj.shape[2] == 3:
@@ -137,7 +134,7 @@ class TrajAirNet(nn.Module):
                 obs_perm = obs_traj.permute(0, 1, 3, 2)
             else:
                 obs_perm = obs_traj  # 已经是 (B, N, 11, 3)
-            # 2. [数据准备] 提取 numpy 数据
+            # 2. 提取 numpy 数据
             obs_np = obs_perm.detach().cpu().numpy()
             last_pos_gpu = obs_perm[:, :, -1, :].unsqueeze(2).unsqueeze(2)
             # 3. [Embedding]
@@ -150,7 +147,7 @@ class TrajAirNet(nn.Module):
             raw = np.array([[np.array(i['pred_data']).T if np.array(i['pred_data']).shape[0] == 3 else np.array(
                 i['pred_data']) for i in s] for s in search_res])
             rel = raw - raw[:, :, 0:1, :]
-            # 6. [聚类] 使用 GaussianMixture (GMM)
+            # 6. [聚类] 使用(GMM)
             ctrs = np.array([
                 GaussianMixture(n_components=self.n_clusters, covariance_type='diag', random_state=0).fit(
                     r.reshape(self.k_retrieve, -1)

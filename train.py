@@ -55,7 +55,7 @@ def train():
     parser.add_argument('--agent_num', type=int, default=3)
 
     # RAG 参数
-    parser.add_argument('--k_retrieve', type=int, default=100)
+    parser.add_argument('--k_retrieve', type=int, default=20)
     parser.add_argument('--n_clusters', type=int, default=3)
 
     args = parser.parse_args()
@@ -104,7 +104,7 @@ def train():
 
             optimizer.zero_grad()
 
-            # [核心修改] 调用模型时，传入 rag 和 embedder
+            #  调用模型时，传入 rag 和 embedder
             loss_dist, loss_uncertainty = model(obs_traj, pred_traj, adj[0], torch.transpose(context, 1, 2),
                                                 rag_system=rag, embedder=embedder)
 
@@ -139,7 +139,7 @@ def train():
         if args.evaluate and epoch % 5 == 0:
             print("Starting Testing....")
             model.eval()
-            # [核心修改] 传递 rag 和 embedder 给 test 函数
+            # 传递 rag 和 embedder 给 test 函数
             test_ade_loss, test_fde_loss = test(model, loader_test, device, rag, embedder)
             print("EPOCH: ", epoch, "Train Loss: ", loss_total / count, "Test ADE Loss: ", test_ade_loss,
                   "Test FDE Loss: ", test_fde_loss)
