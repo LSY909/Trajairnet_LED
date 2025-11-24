@@ -13,7 +13,7 @@ from model.Rag_embedder import TimeSeriesEmbedder
 
 def get_route_priors_offline(obs_traj, rag_system, embedder, k_retrieve, n_clusters):
     """
-    核心计算逻辑 (CPU版 GMM) - 针对单个 Batch 进行处理
+    核心计算逻辑
     """
     # 1. 维度调整 (Batch, Agent, Time, Dim)
     # 确保是 Time-Last 用于 embedder (N, T, D)
@@ -30,7 +30,6 @@ def get_route_priors_offline(obs_traj, rag_system, embedder, k_retrieve, n_clust
     search_res = rag_system.search_batch(query_emb, k=k_retrieve)
 
     # 3. 准备输出容器
-    # 我们只保存【相对形状】，绝对位置在训练时实时加上
     # Shape: (N_total_agents, N_Clusters, 12, 3)
     relative_routes = np.zeros((n_total_agents, n_clusters, 12, dim), dtype=np.float32)
 
@@ -79,13 +78,10 @@ def run_pre_processing(args):
         data_path = os.path.join(root, 'dataset', args.dataset_name, 'processed_data', split)
 
         # 1. 初始化 Dataset
-        # shuffle=False 极其重要！保证保存的数据顺序和训练时读取的数据顺序严格一致
         dataset = TrajectoryDataset(data_path, obs_len=args.obs, pred_len=args.preds, step=args.preds_step)
 
         # 2. 使用 DataLoader 批量处理
-        # batch_size 可以设大一点 (如 64)，利用 embedder 的批处理能力
-        # 这里我们不需要 collate_fn 做 padding，因为我们是对原始数据进行预处理
-        # 直接读取 dataset.obs_traj 这种方式是最直接的，但为了稳健，我们手动从 dataset.obs_traj 取数据
+        # 从 dataset.obs_traj 取数据
 
         # 直接获取所有观测数据
         all_obs_data = dataset.obs_traj  # Tensor (Total_Agents, 11, 3)
@@ -106,7 +102,6 @@ def run_pre_processing(args):
 
             all_priors_list.append(priors)
 
-        # 拼接所有结果
         full_priors = np.concatenate(all_priors_list, axis=0)
 
         # 保存
@@ -115,14 +110,13 @@ def run_pre_processing(args):
         print(f"✅ Saved {split} priors to {save_path}")
         print(f"   Shape: {full_priors.shape}")
 
-        # 验证形状匹配
         if full_priors.shape[0] != num_samples:
             print(f"⚠️ WARNING: Size mismatch! Dataset: {num_samples}, Priors: {full_priors.shape[0]}")
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset_name', type=str, default='111_days')
+    parser.add_argument('--dataset_name', type=str, default='7days1_small')
     parser.add_argument('--rag_dir', type=str, default='rag_file_7days2')
     parser.add_argument('--obs', type=int, default=11)
     parser.add_argument('--preds', type=int, default=120)

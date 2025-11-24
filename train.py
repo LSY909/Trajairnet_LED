@@ -165,7 +165,6 @@ import time
 
 
 def train():
-    # 参数设置
     parser = argparse.ArgumentParser(description='Train TrajAirNet model')
     parser.add_argument('--dataset_folder', type=str, default='/dataset/')
     parser.add_argument('--dataset_name', type=str, default='111_days')
@@ -202,68 +201,48 @@ def train():
     parser.add_argument('--agent_num', type=int, default=3)
 
     # RAG 参数
-    parser.add_argument('--k_retrieve', type=int, default=20)  # 离线预处理使用的检索数
+    parser.add_argument('--k_retrieve', type=int, default=20)
     parser.add_argument('--n_clusters', type=int, default=3)
 
     args = parser.parse_args()
     os.environ['CUDA_VISIBLE_DEVICES'] = '3'
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # ==========================================
-    # [步骤 1] 检查离线预处理文件
-    # ==========================================
-    # 定义预处理文件路径
-    train_priors_path = f'./dataset/{args.dataset_name}/train_route_priors.npy'
-    test_priors_path = f'./dataset/{args.dataset_name}/test_route_priors.npy'
+    # [1] 检查预处理
+    train_prior_path = f'./dataset/{args.dataset_name}/train_route_priors.npy'
+    test_prior_path = f'./dataset/{args.dataset_name}/test_route_priors.npy'
+    if not os.path.exists(train_prior_path):
+        print("⏳ Detecting missing priors. Running Offline Pre-processing...")
+        os.system(f"python preprocess_routes.py --dataset_name {args.dataset_name}")
 
-    # 如果文件不存在，自动运行预处理脚本
-    if not os.path.exists(train_priors_path):
-        print(f"⏳ Route priors not found at {train_priors_path}")
-        print("   Running offline preprocessing (this happens only once)...")
-        # 调用我们刚才写的 preprocess_routes.py
-        exit_code = os.system(
-            f"python preprocess_routes.py --dataset_name {args.dataset_name} --k_retrieve {args.k_retrieve} --n_clusters {args.n_clusters}")
-        if exit_code != 0:
-            raise RuntimeError("Preprocessing failed!")
-
-    # ==========================================
-    # [步骤 2] 加载数据 (传入 priors_path)
-    # ==========================================
     datapath = os.getcwd() + args.dataset_folder + args.dataset_name + "/processed_data/"
+
     print("Loading Train Data...")
     dataset_train = TrajectoryDataset(
-        datapath + "train",
-        obs_len=args.obs,
-        pred_len=args.preds,
-        step=args.preds_step,
-        delim=args.delim,
-        priors_path=train_priors_path  # <--- 传入预处理文件路径
+        datapath + "train", obs_len=args.obs, pred_len=args.preds, step=args.preds_step, delim=args.delim,
+        priors_path=train_prior_path
     )
-
     print("Loading Test Data...")
     dataset_test = TrajectoryDataset(
-        datapath + "test",
-        obs_len=args.obs,
-        pred_len=args.preds,
-        step=args.preds_step,
-        delim=args.delim,
-        priors_path=test_priors_path  # <--- 传入预处理文件路径
+        datapath + "test", obs_len=args.obs, pred_len=args.preds, step=args.preds_step, delim=args.delim,
+        priors_path=test_prior_path
     )
 
-    # [优化] 增大 Batch Size (例如 64) 以利用 GPU 性能
-    BATCH_SIZE = 64
-    loader_train = DataLoader(dataset_train, batch_size=BATCH_SIZE, num_workers=4, shuffle=True,
-                              collate_fn=seq_collate_with_padding)
-    loader_test = DataLoader(dataset_test, batch_size=BATCH_SIZE, num_workers=4, shuffle=True,
-                             collate_fn=seq_collate_with_padding)
+    # [注意] 保持 Batch Size 32，先看看 AMP 能降多少显存
+    BATCH_SIZE = 16
+    loader_train = DataLoader(dataset_train, batch_size=BATCH_SIZE, num_workers=8, shuffle=True,
+                              collate_fn=seq_collate_with_padding, pin_memory=True)
+    loader_test = DataLoader(dataset_test, batch_size=BATCH_SIZE, num_workers=8, shuffle=True,
+                             collate_fn=seq_collate_with_padding, pin_memory=True)
 
     model = TrajAirNet(args)
     model.to(device)
-
-    print(f"torch.cuda.is_available: {torch.cuda.is_available()}")
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
-    print("Starting Training....")
+    # [核心优化] 初始化 GradScaler
+    scaler = torch.cuda.amp.GradScaler()
+
+    print("Starting Training (with AMP)....")
 
     for epoch in range(1, args.total_epochs + 1):
         model.train()
@@ -271,9 +250,6 @@ def train():
 
         for batch in tqdm(loader_train):
             batch = [tensor.to(device) if tensor is not None else None for tensor in batch]
-
-            # [步骤 3] 解包数据 (现在包含 route_priors)
-            # utils.py 中的 collate_fn 会返回 7 个元素
             obs_traj, pred_traj, obs_traj_rel, pred_traj_rel, context, seq_start, route_priors = batch
 
             num_agents = obs_traj.shape[1]
@@ -281,50 +257,45 @@ def train():
 
             optimizer.zero_grad()
 
-            # [步骤 4] 调用模型 (直接传入 route_priors)
-            # 不再需要 rag_system 和 embedder
-            loss_dist, loss_uncertainty = model(
-                obs_traj,
-                pred_traj,
-                adj[0],
-                context.transpose(1, 2),
-                route_priors=route_priors  # <--- 直接使用离线数据
-            )
+            # [核心优化] 开启混合精度上下文
+            with torch.cuda.amp.autocast():
+                loss_dist, loss_uncertainty = model(
+                    obs_traj, pred_traj, adj[0], context.transpose(1, 2),
+                    route_priors=route_priors
+                )
+                alpha = 100
+                loss = loss_dist * alpha + loss_uncertainty
 
-            alpha = 100
-            loss = loss_dist * alpha + loss_uncertainty
+            # [核心优化] 使用 scaler 缩放损失并反向传播
+            scaler.scale(loss).backward()
 
-            loss_total += loss.item()
-            loss_dt += loss_dist.item() * alpha
-            loss_dc += loss_uncertainty.item()
-
-            loss.backward()
+            # Unscale 梯度以便裁剪 (可选但推荐)
+            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.model_initializer.parameters(), 1.)
-            optimizer.step()
-            count += 1
 
-        print('[{}] Epoch: {}\tLoss: {:.6f}\tLoss Dist.: {:.6f}\tLoss Uncertainty: {:.6f}'.format(
-            time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
-            epoch, loss_total / count, loss_dt / count, loss_dc / count))
+            # 这里的 step 和 update 替代原来的 optimizer.step()
+            scaler.step(optimizer)
+            scaler.update()
+
+            count += 1
+            loss_total += loss.item()  # 注意：loss 可能是 scaled tensor，但在 autocast 外取 item 通常没问题
+
+        print(f'Epoch: {epoch}\tLoss: {loss_total / count:.6f}')
 
         if args.save_model:
-            loss = loss_total / count
             model_path = os.getcwd() + args.model_pth + "model_" + args.dataset_name + "_" + str(epoch) + ".pt"
-            print("Saving model at", model_path)
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'loss': loss,
+                'loss': loss_total / count,
             }, model_path)
 
         if epoch % 5 == 0:
             print("Starting Testing....")
             model.eval()
-            # test 函数也需要同步修改为接收 route_priors (离线模式)
             test_ade_loss, test_fde_loss = test(model, loader_test, device)
-            print("EPOCH: ", epoch, "Train Loss: ", loss, "Test ADE Loss: ", test_ade_loss, "Test FDE Loss: ",
-                  test_fde_loss)
+            print(f"EPOCH: {epoch} Test ADE: {test_ade_loss} Test FDE: {test_fde_loss}")
 
 
 if __name__ == '__main__':

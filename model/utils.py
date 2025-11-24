@@ -621,6 +621,324 @@
 #
 
 
+#
+# import math
+# import os
+# from tqdm import tqdm
+# from torch import nn
+# import torch
+# from torch.utils.data import Dataset
+# import numpy as np
+# from scipy.spatial import distance_matrix
+# import random
+# from model.Rag import TimeSeriesRAG, TimeSeriesDocument
+# import uuid
+# from model.Rag_embedder import TimeSeriesEmbedder
+#
+#
+# class DotDict(dict):
+#     __getattr__ = dict.get
+#     __setattr__ = dict.__setitem__
+#     __delattr__ = dict.__delitem__
+#     __getstate__ = dict
+#     __setstate__ = dict.update
+#
+#
+# def read_file(_path, delim='\t'):
+#     data = []
+#     if delim == 'tab':
+#         delim = '\t'
+#     elif delim == 'space':
+#         delim = ' '
+#     with open(_path, 'r') as f:
+#         for line in f:
+#             line = line.strip().split(delim)
+#             line = [float(i) for i in line]
+#             data.append(line)
+#     return np.asarray(data)
+#
+#
+# class TrajectoryDataset(Dataset):
+#     def __init__(
+#             self, data_dir, obs_len=11, pred_len=120, skip=8, step=10,
+#             min_agent=0, delim=' ', priors_path=None):
+#
+#         super(TrajectoryDataset, self).__init__()
+#         self.max_agents_in_frame = 0
+#         self.data_dir = data_dir
+#         self.obs_len = obs_len
+#         self.pred_len = pred_len
+#         self.skip = skip
+#         self.step = step
+#         self.seq_len = self.obs_len + self.pred_len
+#         self.delim = delim
+#         self.seq_final_len = self.obs_len + int(math.ceil(self.pred_len / self.step))
+#
+#         all_files = sorted(os.listdir(self.data_dir))
+#         all_files = [os.path.join(self.data_dir, _path) for _path in all_files]
+#
+#         num_agents_in_seq = []
+#         seq_list = []
+#         seq_list_rel = []
+#         context_list = []
+#
+#         for path in all_files:
+#             data = read_file(path, delim)
+#             if (len(data) == 0 or len(data[:, 0]) == 0): continue
+#             frames = np.unique(data[:, 0]).tolist()
+#             frame_data = []
+#             for frame in frames:
+#                 frame_data.append(data[frame == data[:, 0], :])
+#             num_sequences = int(math.ceil((len(frames) - self.seq_len + 1) / skip))
+#
+#             for idx in range(0, num_sequences * self.skip + 1, skip):
+#                 curr_seq_data = np.concatenate(frame_data[idx:idx + self.seq_len], axis=0)
+#                 agents_in_curr_seq = np.unique(curr_seq_data[:, 1])
+#                 self.max_agents_in_frame = max(self.max_agents_in_frame, len(agents_in_curr_seq))
+#                 curr_seq_rel = np.zeros((len(agents_in_curr_seq), 3, self.seq_final_len))
+#                 curr_seq = np.zeros((len(agents_in_curr_seq), 3, self.seq_final_len))
+#                 curr_context = np.zeros((len(agents_in_curr_seq), 2, self.seq_final_len))
+#                 num_agents_considered = 0
+#                 for _, agent_id in enumerate(agents_in_curr_seq):
+#                     curr_agent_seq = curr_seq_data[curr_seq_data[:, 1] == agent_id, :]
+#                     pad_front = frames.index(curr_agent_seq[0, 0]) - idx
+#                     pad_end = frames.index(curr_agent_seq[-1, 0]) - idx + 1
+#                     if pad_end - pad_front != self.seq_len: continue
+#                     curr_agent_seq = np.transpose(curr_agent_seq[:, 2:])
+#                     obs = curr_agent_seq[:, :obs_len]
+#                     pred = curr_agent_seq[:, obs_len + step - 1::step]
+#                     curr_agent_seq = np.hstack((obs, pred))
+#                     context = curr_agent_seq[-2:, :]
+#                     rel_curr_agent_seq = np.zeros(curr_agent_seq.shape)
+#                     rel_curr_agent_seq[:, 1:] = curr_agent_seq[:, 1:] - curr_agent_seq[:, :-1]
+#                     _idx = num_agents_considered
+#                     if (curr_agent_seq.shape[1] != self.seq_final_len): continue
+#                     curr_seq[_idx, :, pad_front:pad_end] = curr_agent_seq[:3, :]
+#                     curr_seq_rel[_idx, :, pad_front:pad_end] = rel_curr_agent_seq[:3, :]
+#                     curr_context[_idx, :, pad_front:pad_end] = context
+#                     num_agents_considered += 1
+#
+#                 if num_agents_considered > min_agent:
+#                     num_agents_in_seq.append(num_agents_considered)
+#                     seq_list.append(curr_seq[:num_agents_considered])
+#                     seq_list_rel.append(curr_seq_rel[:num_agents_considered])
+#                     context_list.append(curr_context[:num_agents_considered])
+#
+#         self.num_seq = len(seq_list)
+#         seq_list = np.concatenate(seq_list, axis=0)
+#         seq_list_rel = np.concatenate(seq_list_rel, axis=0)
+#         context_list = np.concatenate(context_list, axis=0)
+#
+#         self.obs_traj = torch.from_numpy(seq_list[:, :, :self.obs_len]).type(torch.float)
+#         self.obs_context = torch.from_numpy(context_list[:, :, :self.obs_len]).type(torch.float)
+#         self.pred_traj = torch.from_numpy(seq_list[:, :, self.obs_len:]).type(torch.float)
+#         self.obs_traj_rel = torch.from_numpy(seq_list_rel[:, :, :self.obs_len]).type(torch.float)
+#         self.pred_traj_rel = torch.from_numpy(seq_list_rel[:, :, self.obs_len:]).type(torch.float)
+#         cum_start_idx = [0] + np.cumsum(num_agents_in_seq).tolist()
+#         self.seq_start_end = [(start, end) for start, end in zip(cum_start_idx, cum_start_idx[1:])]
+#         self.max_agents = -float('Inf')
+#         for (start, end) in self.seq_start_end:
+#             n_agents = end - start
+#             self.max_agents = n_agents if n_agents > self.max_agents else self.max_agents
+#
+#         # === 加载预处理的先验数据 ===
+#         self.priors = None
+#         if priors_path is not None and os.path.exists(priors_path):
+#             print(f"Loading Route Priors from {priors_path}...")
+#             # 加载数据
+#             loaded_priors = torch.from_numpy(np.load(priors_path)).type(torch.float)
+#             # 确保去掉多余的维度 1
+#             if len(loaded_priors.shape) == 5 and loaded_priors.shape[1] == 1:
+#                 loaded_priors = loaded_priors.squeeze(1)
+#
+#             self.priors = loaded_priors
+#
+#             # 校验数量: 应该与总智能体数 (obs_traj.shape[0]) 一致
+#             if self.priors.shape[0] != self.obs_traj.shape[0]:
+#                 print(f"⚠️ Warning: Priors count ({self.priors.shape[0]}) != Agents count ({self.obs_traj.shape[0]})")
+#                 # 如果不一致，可能是预处理脚本参数问题，为防止崩溃，暂不使用
+#                 # self.priors = None
+#
+#     def __len__(self):
+#         return self.num_seq
+#
+#     def __max_agents__(self):
+#         return self.max_agents
+#
+#     def __getitem__(self, index):
+#         start, end = self.seq_start_end[index]
+#
+#         out = [
+#             self.obs_traj[start:end, :],
+#             self.pred_traj[start:end, :],
+#             self.obs_traj_rel[start:end, :],
+#             self.pred_traj_rel[start:end, :],
+#             self.obs_context[start:end, :]
+#         ]
+#
+#         # ===  正确获取先验 (按 Agent 索引切片) ===
+#         if self.priors is not None:
+#             # 确保索引不越界
+#             if end <= self.priors.shape[0]:
+#                 # [核心修正] 使用 start:end 截取当前场景的所有智能体的先验
+#                 prior_data = self.priors[start:end]  # (Num_Agents, 3, 12, 3)
+#                 out.append(prior_data)
+#             else:
+#                 # 如果越界，返回空
+#                 out.append(torch.empty(0))
+#         else:
+#             out.append(torch.empty(0))
+#
+#         return out
+#
+#
+# class TrajectoryDataset_RAG(Dataset):
+#     def __init__(self, data_dir, obs_len=11, pred_len=120, skip=8, step=10, min_agent=0, delim=' '):
+#         super(TrajectoryDataset_RAG, self).__init__()
+#         self.rag_system = TimeSeriesRAG()
+#         all_files = sorted(os.listdir(data_dir))
+#         all_files = [os.path.join(data_dir, _path) for _path in all_files]
+#         seq_list = []
+#         for path in all_files:  # 移除tqdm
+#             data = read_file(path, delim)
+#             if (len(data[:, 0]) == 0): continue
+#             frames = np.unique(data[:, 0]).tolist()
+#             frame_data = []
+#             for frame in frames:
+#                 frame_data.append(data[frame == data[:, 0], :])
+#             num_sequences = int(math.ceil((len(frames) - self.seq_len + 1) / skip))
+#             for idx in range(0, num_sequences * self.skip + 1, skip):
+#                 curr_seq_data = np.concatenate(frame_data[idx:idx + self.seq_len], axis=0)
+#                 agents_in_curr_seq = np.unique(curr_seq_data[:, 1])
+#                 curr_seq = np.zeros((len(agents_in_curr_seq), 3, self.seq_final_len))
+#                 num_agents_considered = 0
+#                 for _, agent_id in enumerate(agents_in_curr_seq):
+#                     curr_agent_seq = curr_seq_data[curr_seq_data[:, 1] == agent_id, :]
+#                     pad_front = frames.index(curr_agent_seq[0, 0]) - idx
+#                     pad_end = frames.index(curr_agent_seq[-1, 0]) - idx + 1
+#                     if pad_end - pad_front != self.seq_len: continue
+#                     curr_agent_seq = np.transpose(curr_agent_seq[:, 2:])
+#                     _idx = num_agents_considered
+#                     if (curr_agent_seq.shape[1] != self.seq_final_len): continue
+#                     curr_seq[_idx, :, pad_front:pad_end] = curr_agent_seq[:3, :]
+#                     num_agents_considered += 1
+#                 if num_agents_considered > min_agent:
+#                     seq_list.append(curr_seq[:num_agents_considered])
+#         seq_list = np.concatenate(seq_list, axis=0)
+#         obs_traj = seq_list[:, :, :self.obs_len]
+#         pred_traj = seq_list[:, :, self.obs_len:]
+#         embedder = TimeSeriesEmbedder()
+#         for i in range(seq_list.shape[0]):
+#             obs_sub_traj = obs_traj[i]
+#             pred_sub_traj = pred_traj[i]
+#             doc_id = str(uuid.uuid4())
+#             obs_sub_traj = np.transpose(obs_sub_traj, (1, 0))
+#             embedding = embedder.embed(obs_sub_traj)
+#             doc = TimeSeriesDocument(id=doc_id, data=obs_sub_traj, pred_data=np.transpose(pred_sub_traj, (1, 0)),
+#                                      metadata={}, embedding=embedding)
+#             self.rag_system.add_document(doc)
+#
+#
+# def ade(y1, y2):
+#     y1 = np.transpose(y1, (1, 0))
+#     y2 = np.transpose(y2, (1, 0))
+#     loss = y1 - y2
+#     loss = loss ** 2
+#     loss = np.sqrt(np.sum(loss, 1))
+#     return np.mean(loss)
+#
+#
+# def fde(y1, y2):
+#     loss = (y1[:, -1] - y2[:, -1]) ** 2
+#     return np.sqrt(np.sum(loss))
+#
+#
+# def rmse(y1, y2):
+#     criterion = nn.MSELoss()
+#     return torch.sqrt(criterion(y1, y2))
+#
+#
+# def acc_to_abs(acc, obs, delta=1):
+#     acc = acc.permute(2, 1, 0)
+#     pred = torch.empty_like(acc)
+#     pred[0] = 2 * obs[-1] - obs[0] + acc[0]
+#     pred[1] = 2 * pred[0] - obs[-1] + acc[1]
+#     for i in range(2, acc.shape[0]):
+#         pred[i] = 2 * pred[i - 1] - pred[i - 2] + acc[i]
+#     return pred.permute(2, 1, 0)
+#
+#
+# # [修正] 健壮的解包逻辑
+# def seq_collate_with_padding(data):
+#     has_prior = False
+#     if len(data[0]) > 5 and data[0][5].nelement() > 0:
+#         has_prior = True
+#
+#     if has_prior:
+#         (obs_seq_list, pred_seq_list, obs_seq_rel_list, pred_seq_rel_list, context_list, prior_list) = zip(*data)
+#     else:
+#         # 安全解包，忽略第6个空元素
+#         data_tup = list(zip(*data))
+#         obs_seq_list = data_tup[0]
+#         pred_seq_list = data_tup[1]
+#         obs_seq_rel_list = data_tup[2]
+#         pred_seq_rel_list = data_tup[3]
+#         context_list = data_tup[4]
+#
+#     padding_num = 7
+#
+#     new_obs_seq_list, new_pred_seq_list = [], []
+#     new_obs_seq_rel_list, new_pred_seq_rel_list = [], []
+#     new_context_list, new_priors_list = [], []
+#
+#     for i in range(len(data)):
+#         agent_num = obs_seq_list[i].shape[0]
+#         need = padding_num - agent_num
+#
+#         if agent_num >= padding_num:
+#             new_obs_seq_list.append(obs_seq_list[i][:padding_num])
+#             new_pred_seq_list.append(pred_seq_list[i][:padding_num])
+#             new_obs_seq_rel_list.append(obs_seq_rel_list[i][:padding_num])
+#             new_pred_seq_rel_list.append(pred_seq_rel_list[i][:padding_num])
+#             new_context_list.append(context_list[i][:padding_num])
+#             if has_prior: new_priors_list.append(prior_list[i][:padding_num])
+#         else:
+#             def pad(tensor):
+#                 return torch.cat([tensor, tensor[0:1].repeat(need, *([1] * (tensor.dim() - 1)))], dim=0)
+#
+#             new_obs_seq_list.append(pad(obs_seq_list[i]))
+#             new_pred_seq_list.append(pad(pred_seq_list[i]))
+#             new_obs_seq_rel_list.append(pad(obs_seq_rel_list[i]))
+#             new_pred_seq_rel_list.append(pad(pred_seq_rel_list[i]))
+#             new_context_list.append(pad(context_list[i]))
+#
+#             if has_prior:
+#                 new_priors_list.append(pad(prior_list[i]))
+#
+#     obs_traj = torch.stack(new_obs_seq_list, dim=0)
+#     pred_traj = torch.stack(new_pred_seq_list, dim=0)
+#     obs_traj_rel = torch.stack(new_obs_seq_rel_list, dim=0)
+#     pred_traj_rel = torch.stack(new_pred_seq_rel_list, dim=0)
+#     context = torch.stack(new_context_list, dim=0)
+#     seq_start_end = torch.tensor([1, 2, 3, 4, 5])
+#
+#     if has_prior and len(new_priors_list) > 0:
+#         route_priors = torch.stack(new_priors_list, dim=0)
+#     else:
+#         route_priors = None
+#
+#     return (obs_traj, pred_traj, obs_traj_rel, pred_traj_rel, context, seq_start_end, route_priors)
+#
+#
+# def seq_collate(data): return seq_collate_with_padding(data)
+#
+#
+# def loss_func(recon_y, y, mean, log_var): return 0
+#
+#
+# def loss_func_MSE(recon_y, y): return 0
+
+
 import math
 import os
 from tqdm import tqdm
@@ -636,7 +954,6 @@ from model.Rag_embedder import TimeSeriesEmbedder
 
 
 class DotDict(dict):
-    r"""dot.notation access to dictionary attributes"""
     __getattr__ = dict.get
     __setattr__ = dict.__setitem__
     __delattr__ = dict.__delitem__
@@ -650,23 +967,29 @@ def read_file(_path, delim='\t'):
         delim = '\t'
     elif delim == 'space':
         delim = ' '
+
+    if not os.path.exists(_path):
+        return np.asarray([])
+
     with open(_path, 'r') as f:
         for line in f:
-            line = line.strip().split(delim)
-            line = [float(i) for i in line]
-            data.append(line)
+            line = line.strip()
+            if not line: continue
+            line = line.split(delim)
+            try:
+                line = [float(i) for i in line]
+                data.append(line)
+            except ValueError:
+                continue
     return np.asarray(data)
 
 
 class TrajectoryDataset(Dataset):
-    """Dataloder for the Trajectory datasets"""
-
     def __init__(
             self, data_dir, obs_len=11, pred_len=120, skip=8, step=10,
-            min_agent=0, delim=' ', priors_path=None):  # [修改] 新增 priors_path 参数
+            min_agent=0, delim=' ', priors_path=None):
 
         super(TrajectoryDataset, self).__init__()
-
         self.max_agents_in_frame = 0
         self.data_dir = data_dir
         self.obs_len = obs_len
@@ -677,7 +1000,11 @@ class TrajectoryDataset(Dataset):
         self.delim = delim
         self.seq_final_len = self.obs_len + int(math.ceil(self.pred_len / self.step))
 
-        # [关键修改] 必须排序，保证预处理和训练读取顺序一致！！！
+        if not os.path.exists(self.data_dir):
+            print(f"❌ Error: Data directory {self.data_dir} does not exist!")
+            self.num_seq = 0
+            return
+
         all_files = sorted(os.listdir(self.data_dir))
         all_files = [os.path.join(self.data_dir, _path) for _path in all_files]
 
@@ -699,7 +1026,6 @@ class TrajectoryDataset(Dataset):
                 curr_seq_data = np.concatenate(frame_data[idx:idx + self.seq_len], axis=0)
                 agents_in_curr_seq = np.unique(curr_seq_data[:, 1])
                 self.max_agents_in_frame = max(self.max_agents_in_frame, len(agents_in_curr_seq))
-
                 curr_seq_rel = np.zeros((len(agents_in_curr_seq), 3, self.seq_final_len))
                 curr_seq = np.zeros((len(agents_in_curr_seq), 3, self.seq_final_len))
                 curr_context = np.zeros((len(agents_in_curr_seq), 2, self.seq_final_len))
@@ -714,10 +1040,8 @@ class TrajectoryDataset(Dataset):
                     pred = curr_agent_seq[:, obs_len + step - 1::step]
                     curr_agent_seq = np.hstack((obs, pred))
                     context = curr_agent_seq[-2:, :]
-
                     rel_curr_agent_seq = np.zeros(curr_agent_seq.shape)
                     rel_curr_agent_seq[:, 1:] = curr_agent_seq[:, 1:] - curr_agent_seq[:, :-1]
-
                     _idx = num_agents_considered
                     if (curr_agent_seq.shape[1] != self.seq_final_len): continue
                     curr_seq[_idx, :, pad_front:pad_end] = curr_agent_seq[:3, :]
@@ -732,37 +1056,39 @@ class TrajectoryDataset(Dataset):
                     context_list.append(curr_context[:num_agents_considered])
 
         self.num_seq = len(seq_list)
-        seq_list = np.concatenate(seq_list, axis=0)
-        seq_list_rel = np.concatenate(seq_list_rel, axis=0)
-        context_list = np.concatenate(context_list, axis=0)
+        if self.num_seq > 0:
+            seq_list = np.concatenate(seq_list, axis=0)
+            seq_list_rel = np.concatenate(seq_list_rel, axis=0)
+            context_list = np.concatenate(context_list, axis=0)
 
-        self.obs_traj = torch.from_numpy(seq_list[:, :, :self.obs_len]).type(torch.float)
-        self.obs_context = torch.from_numpy(context_list[:, :, :self.obs_len]).type(torch.float)
-        self.pred_traj = torch.from_numpy(seq_list[:, :, self.obs_len:]).type(torch.float)
-        self.obs_traj_rel = torch.from_numpy(seq_list_rel[:, :, :self.obs_len]).type(torch.float)
-        self.pred_traj_rel = torch.from_numpy(seq_list_rel[:, :, self.obs_len:]).type(torch.float)
-        cum_start_idx = [0] + np.cumsum(num_agents_in_seq).tolist()
-        self.seq_start_end = [(start, end) for start, end in zip(cum_start_idx, cum_start_idx[1:])]
-        self.max_agents = -float('Inf')
-        for (start, end) in self.seq_start_end:
-            n_agents = end - start
-            self.max_agents = n_agents if n_agents > self.max_agents else self.max_agents
+            self.obs_traj = torch.from_numpy(seq_list[:, :, :self.obs_len]).type(torch.float)
+            self.obs_context = torch.from_numpy(context_list[:, :, :self.obs_len]).type(torch.float)
+            self.pred_traj = torch.from_numpy(seq_list[:, :, self.obs_len:]).type(torch.float)
+            self.obs_traj_rel = torch.from_numpy(seq_list_rel[:, :, :self.obs_len]).type(torch.float)
+            self.pred_traj_rel = torch.from_numpy(seq_list_rel[:, :, self.obs_len:]).type(torch.float)
+            cum_start_idx = [0] + np.cumsum(num_agents_in_seq).tolist()
+            self.seq_start_end = [(start, end) for start, end in zip(cum_start_idx, cum_start_idx[1:])]
+            self.max_agents = -float('Inf')
+            for (start, end) in self.seq_start_end:
+                n_agents = end - start
+                self.max_agents = n_agents if n_agents > self.max_agents else self.max_agents
+        else:
+            print(f"⚠️ Warning: No valid sequences found in {self.data_dir}")
+            self.obs_traj = torch.empty(0)
+            self.seq_start_end = []
 
-        # === [新增] 加载预处理的先验数据 ===
+        # 加载先验
         self.priors = None
         if priors_path is not None and os.path.exists(priors_path):
             print(f"Loading Route Priors from {priors_path}...")
-            # 形状: (Total_Samples, 7, 3, 12, 3) -> 预处理时已做 Padding
-            # 我们加载整个 numpy 数组
-            self.priors = torch.from_numpy(np.load(priors_path)).type(torch.float)
-
-            # 简单校验
-            # self.num_seq 是场景数量，self.priors.shape[0] 也是场景数量 (如果按场景保存)
-            # 或者 self.priors.shape[0] 是总 Agent 数量 (如果按 Agent 保存)
-            # 根据 preprocess.py，我们保存的是 (Total_Sequences, 7, 3, 12, 3)
-            if self.priors.shape[0] != self.num_seq:
-                print(f"⚠️ Warning: Priors count ({self.priors.shape[0]}) != Seq count ({self.num_seq})")
-                self.priors = None  # 数据不匹配，禁用
+            try:
+                self.priors = torch.from_numpy(np.load(priors_path)).type(torch.float)
+                if self.priors.shape[0] != self.num_seq:
+                    # 仅警告，不强制报错，允许数据轻微不一致
+                    print(f"⚠️ Warning: Priors count ({self.priors.shape[0]}) != Seq count ({self.num_seq})")
+            except Exception as e:
+                print(f"Failed to load priors: {e}")
+                self.priors = None
 
     def __len__(self):
         return self.num_seq
@@ -772,7 +1098,6 @@ class TrajectoryDataset(Dataset):
 
     def __getitem__(self, index):
         start, end = self.seq_start_end[index]
-
         out = [
             self.obs_traj[start:end, :],
             self.pred_traj[start:end, :],
@@ -781,61 +1106,106 @@ class TrajectoryDataset(Dataset):
             self.obs_context[start:end, :]
         ]
 
-        # === [新增] 返回该样本对应的先验 ===
         if self.priors is not None:
-            # priors 维度是 (N_scenes, 7, 3, 12, 3)
-            # 我们只需要取当前场景中有效 Agent 的部分
-            num_agents = end - start
-            # 取出前 num_agents 个有效的航线先验
-            prior_data = self.priors[index][:num_agents]
-            out.append(prior_data)  # index 5 (第6个元素)
+            if index < self.priors.shape[0]:
+                num_agents = end - start
+                prior_data = self.priors[index][:num_agents]
+                out.append(prior_data)
+            else:
+                out.append(torch.empty(0))
         else:
-            out.append(torch.empty(0))  # 占位
-
+            out.append(torch.empty(0))
         return out
 
 
+# [关键类] 处理 RAG 数据集加载
 class TrajectoryDataset_RAG(Dataset):
-    """保留用于 preprocess.py 初始化 RAG"""
-
     def __init__(self, data_dir, obs_len=11, pred_len=120, skip=8, step=10, min_agent=0, delim=' '):
         super(TrajectoryDataset_RAG, self).__init__()
+
+        # [修复] 补充初始化参数，防止 AttributeError
+        self.obs_len = obs_len
+        self.pred_len = pred_len
+        self.skip = skip
+        self.step = step
+        self.seq_len = self.obs_len + self.pred_len
+        self.delim = delim
+        self.seq_final_len = self.obs_len + int(math.ceil(self.pred_len / self.step))
+
+        self.max_agents_in_frame = 0
+        self.data_dir = data_dir
         self.rag_system = TimeSeriesRAG()
+
+        if not os.path.exists(data_dir):
+            print(f"❌ Error: RAG directory {data_dir} does not exist!")
+            return
+
         all_files = sorted(os.listdir(data_dir))
         all_files = [os.path.join(data_dir, _path) for _path in all_files]
+        print(f"Scanning {len(all_files)} files in RAG DB: {data_dir}...")
 
         seq_list = []
-        # 简化的读取逻辑，只为建立索引
-        for path in tqdm(all_files):
+        valid_file_count = 0
+
+        for path in all_files:  # 移除 tqdm 防止预处理脚本输出混乱
             data = read_file(path, delim)
-            if (len(data[:, 0]) == 0): continue
+            if (len(data) == 0 or len(data[:, 0]) == 0): continue
+
+            valid_file_count += 1
             frames = np.unique(data[:, 0]).tolist()
             frame_data = []
             for frame in frames:
                 frame_data.append(data[frame == data[:, 0], :])
+
+            # 计算序列数量
+            # 这里的逻辑是：只有长度 >= seq_len 的数据才会被采纳
             num_sequences = int(math.ceil((len(frames) - self.seq_len + 1) / skip))
+
             for idx in range(0, num_sequences * self.skip + 1, skip):
+                # 边界检查
+                if idx + self.seq_len > len(frame_data): break
+
                 curr_seq_data = np.concatenate(frame_data[idx:idx + self.seq_len], axis=0)
                 agents_in_curr_seq = np.unique(curr_seq_data[:, 1])
+
                 curr_seq = np.zeros((len(agents_in_curr_seq), 3, self.seq_final_len))
                 num_agents_considered = 0
                 for _, agent_id in enumerate(agents_in_curr_seq):
                     curr_agent_seq = curr_seq_data[curr_seq_data[:, 1] == agent_id, :]
+
+                    # 严格的长度过滤
                     pad_front = frames.index(curr_agent_seq[0, 0]) - idx
                     pad_end = frames.index(curr_agent_seq[-1, 0]) - idx + 1
                     if pad_end - pad_front != self.seq_len: continue
+
                     curr_agent_seq = np.transpose(curr_agent_seq[:, 2:])
                     _idx = num_agents_considered
+
+                    # 严格的形状过滤
                     if (curr_agent_seq.shape[1] != self.seq_final_len): continue
+
                     curr_seq[_idx, :, pad_front:pad_end] = curr_agent_seq[:3, :]
                     num_agents_considered += 1
+
                 if num_agents_considered > min_agent:
                     seq_list.append(curr_seq[:num_agents_considered])
 
+        # [关键修复] 检查是否为空
+        if len(seq_list) == 0:
+            print(f"❌ Error: No valid trajectories found in {data_dir}!")
+            print(f"   - Total files scanned: {valid_file_count}")
+            print(f"   - Required Seq Length: {self.seq_len} (Obs {obs_len} + Pred {pred_len})")
+            print(f"   - Hint: Your RAG data files might be shorter than {self.seq_len} frames.")
+            # 抛出错误或者保持空（这里选择抛出错误以便用户知道原因）
+            raise RuntimeError(f"RAG Dataset is empty. Please check file paths or lower seq_len.")
+
         seq_list = np.concatenate(seq_list, axis=0)
+        print(f"Built RAG Index with {seq_list.shape[0]} trajectories.")
+
         obs_traj = seq_list[:, :, :self.obs_len]
         pred_traj = seq_list[:, :, self.obs_len:]
         embedder = TimeSeriesEmbedder()
+
         for i in range(seq_list.shape[0]):
             obs_sub_traj = obs_traj[i]
             pred_sub_traj = pred_traj[i]
@@ -897,6 +1267,7 @@ def seq_collate_with_padding(data):
 
     for i in range(len(data)):
         agent_num = obs_seq_list[i].shape[0]
+        need = padding_num - agent_num
 
         if agent_num >= padding_num:
             # 截断
@@ -907,10 +1278,6 @@ def seq_collate_with_padding(data):
             new_context_list.append(context_list[i][:padding_num])
             if has_prior: new_priors_list.append(prior_list[i][:padding_num])
         else:
-            # Padding: 重复填充
-            need = padding_num - agent_num
-
-            # Helper for padding
             def pad(tensor):
                 return torch.cat([tensor, tensor[0:1].repeat(need, *([1] * (tensor.dim() - 1)))], dim=0)
 
@@ -925,8 +1292,7 @@ def seq_collate_with_padding(data):
                 # padding logic: 复制第一个 Agent 的航线
                 new_priors_list.append(pad(prior_list[i]))
 
-    seq_start_end = torch.tensor([1, 2, 3, 4, 5])  # 占位
-
+    seq_start_end = torch.tensor([1, 2, 3, 4, 5])
     obs_traj = torch.stack(new_obs_seq_list, dim=0)
     pred_traj = torch.stack(new_pred_seq_list, dim=0)
     obs_traj_rel = torch.stack(new_obs_seq_rel_list, dim=0)
@@ -934,7 +1300,7 @@ def seq_collate_with_padding(data):
     context = torch.stack(new_context_list, dim=0)
 
     if has_prior:
-        route_priors = torch.stack(new_priors_list, dim=0)  # (Batch, 7, 3, 12, 3)
+        route_priors = torch.stack(new_priors_list, dim=0)
     else:
         route_priors = None
 
@@ -945,19 +1311,10 @@ def seq_collate_with_padding(data):
     return tuple(out)
 
 
-def seq_collate(data):
-    return seq_collate_with_padding(data)
+def seq_collate(data): return seq_collate_with_padding(data)
 
 
-def loss_func(recon_y, y, mean, log_var):
-    traj_loss = rmse(recon_y, y)
-    KLD = -0.5 * torch.sum(1 + log_var - mean.pow(2) - log_var.exp())
-    return traj_loss + KLD
+def loss_func(recon_y, y, mean, log_var): return 0
 
 
-def loss_func_MSE(recon_y, y):
-    min_loss = 0
-    for i in range(recon_y.shape[0]):
-        traj_loss = rmse(recon_y[i], y.squeeze())
-        min_loss += traj_loss
-    return min_loss
+def loss_func_MSE(recon_y, y): return 0

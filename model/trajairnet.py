@@ -400,7 +400,7 @@ class TrajAirNet(nn.Module):
         self.one_minus_alphas_bar_sqrt = torch.sqrt(1 - self.alphas_prod)
 
         # ============================================================
-        #  Agent-Map 交互 (航线特征融合)
+        #  Agent-Map 交互
         # ============================================================
         self.k_retrieve = getattr(args, 'k_retrieve', 20)
         self.n_clusters = getattr(args, 'n_clusters', 3)
@@ -423,7 +423,6 @@ class TrajAirNet(nn.Module):
         self.context_fusion = nn.Linear(self.context_dim + self.map_feature_dim, self.context_dim)
         self.act_fusion = nn.ReLU()
 
-        # 确保所有层定义完后再初始化权重
         self.init_weights()
 
     def init_weights(self):
@@ -445,7 +444,7 @@ class TrajAirNet(nn.Module):
         mask = dist_matrix < relation_dist
         return adj, mask
 
-    # [核心修改] forward 仅接收预处理好的 route_priors
+    # forward 仅接收预处理好的 route_priors
     def forward(self, x, y, adj, context, route_priors=None, sort=False):
         batch_size = x.shape[0]
         agent_num = x.shape[1]
@@ -453,8 +452,6 @@ class TrajAirNet(nn.Module):
         # 1. 处理航线先验
         if route_priors is not None:
             # route_priors 来自 DataLoader: (B, N, 3, 12, 3) [相对坐标]
-            # 我们需要加上当前绝对位置
-
             # 提取当前位置 last_pos: (B, N, 1, 1, 3)
             if x.shape[2] == 3:  # (B, N, 3, 11)
                 # 转换为 (B, N, 11, 3) 取最后一个点
@@ -462,7 +459,6 @@ class TrajAirNet(nn.Module):
             else:
                 # 已经是 (B, N, 11, 3)
                 last_pos = x[:, :, -1, :].unsqueeze(2).unsqueeze(2)
-
             # 还原为绝对坐标
             abs_priors = route_priors.to(x.device) + last_pos
 
@@ -513,7 +509,7 @@ class TrajAirNet(nn.Module):
 
         return loss_dist, loss_uncertainty
 
-    # [核心修改] inference 同步修改，只接收 route_priors
+    # 接收 route_priors
     def inference(self, x, y, adj, context, route_priors=None):
         batch_size = x.shape[0]
         agent_num = x.shape[1]

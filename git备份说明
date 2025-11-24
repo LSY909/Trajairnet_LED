@@ -8,3 +8,24 @@ git log --oneline
 git reset --hard <备份的ID点>
 5.强制同步到远程（会丢失修改-尽量不用）
 git push origin main --force
+
+
+
+
+
+(env_traj) root@89f0504224eb:/data/gjcl/lsy/trajairnet_led# git log --oneline
+ed8994e (HEAD -> main, origin/main) FEATURE:agent-map encoder first version
+d6cb3d8 BACKUP:start agent-map encoder
+e71b45d FEATURE:map_encoder Done&train wancheng
+419df9f Update: GMM training backup
+b1b1cfd FEATURE:GMM&map_feature Done
+f49199f BACKUP:GMM&map_feature Doing
+2068955 FEATURE:map encoder Done
+46029e9 BACKUP:change the GMM
+a061725 FEATURE:search & GMM Done
+e02ff6f BACKUP:GMM DOing
+486b6a4 FEATURE:No Change
+5f11197 BACKUP:The total search&GMM
+caa31fe FEATURE: 在train中添加检索和聚类
+3d1ce1f BACKUP:检索之前的备份
+a649ad7 Initial commit
