@@ -5,12 +5,11 @@ from model.utils import TrajectoryDataset, TrajectoryDataset_RAG, seq_collate_wi
 from model.Rag_embedder import TimeSeriesEmbedder
 
 # === 配置 ===
-K_RETRIEVE = 30
+K_RETRIEVE = 20
 N_CLUSTERS = 3
-TOTAL_CONTEXT_SAMPLES = 10  # 【新增】我们总共想在图上画多少条额外的上下文航线
+TOTAL_CONTEXT_SAMPLES = 10
 SAVE_DIR = '/data/gjcl/lsy/trajairnet_led/traj_vis'
 
-# 1. 加载 (保持不变)
 root = os.getcwd()
 loader = DataLoader(TrajectoryDataset(f'{root}/dataset/7days1/processed_data/train', 11, 120, 10), batch_size=1,
                     collate_fn=seq_collate_with_padding, shuffle=True)
@@ -97,9 +96,9 @@ plt.plot(obs[:, 0], obs[:, 1], 'g-o', lw=3, zorder=10, label='Observed History')
 plt.scatter(obs[-1, 0], obs[-1, 1], c='k', s=100, zorder=11)
 
 # 画背景（淡灰色，所有检索结果，可选）
-# for r in relative_raw:
-#     line = np.concatenate([obs[-1:], r + current_end_pos], axis=0)
-#     plt.plot(line[:, 0], line[:, 1], 'gray', alpha=0.05, zorder=1)
+for r in relative_raw:
+    line = np.concatenate([obs[-1:], r + current_end_pos], axis=0)
+    plt.plot(line[:, 0], line[:, 1], 'gray', alpha=0.05, zorder=1)
 
 # 【新增】画自适应采样的上下文轨迹 (半透明，同色)
 if len(context_trajs) > 0:

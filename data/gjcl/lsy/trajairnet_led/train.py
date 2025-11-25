@@ -1,8 +1,6 @@
 import argparse
 import os
-from _ast import arg
 from datetime import datetime
-
 import numpy as np
 from tqdm import tqdm
 import torch
@@ -11,228 +9,167 @@ from torch import optim
 
 from model.Rag_embedder import TimeSeriesEmbedder
 from model.trajairnet import TrajAirNet
-from model.utils import TrajectoryDataset, seq_collate, loss_func, loss_func_MSE, TrajectoryDataset_RAG, seq_collate_with_padding
+from model.utils import TrajectoryDataset, seq_collate_with_padding, TrajectoryDataset_RAG
 from test import test
-
 import time
 
+
 def train():
-    ## 添加的用于debug的代码
-    # import pydevd_pycharm
-    # pydevd_pycharm.settrace(
-    #     'localhost',
-    #     port=9022,
-    #     suspend=True
-    # )
-    ##Dataset params
-    # 创建参数解析器，用于解析命令行参数
-    parser=arg.parse.ArgumentParser(description='Train TrajAirNet model')
-    parser.add_argument('--dataset_folder',type=str,default='/dataset/')
-    # parser.add_argument('--dataset_name',type=str,default='7days1')
-    parser.add_argument('--dataset_name',type=str,default='111_days')
-    #parser.add_argument('--dataset_name',type=str,default='7days1_small')
-    # 观测轨迹长度
-    parser.add_argument('--obs',type=int,default=11)
-    # 预测轨迹长度
-    parser.add_argument('--preds',type=int,default=120)
-    # 预测轨迹长度的时间步长（默认10）
-    parser.add_argument('--preds_step',type=int,default=10)
-    # 预测点为120/10=12个
+    parser = argparse.ArgumentParser(description='Train TrajAirNet model')
+    parser.add_argument('--dataset_folder', type=str, default='/dataset/')
 
 
-
-    ##Network params
-    # 输入通道数（默认3，分别为x、y、v）
-    parser.add_argument('--input_channels',type=int,default=3)
-    # TCN层的通道数（默认256）
-    parser.add_argument('--tcn_channel_size',type=int,default=256)
-    # TCN层的层数（默认2）
-    parser.add_argument('--tcn_layers',type=int,default=2)
-    # TCN层的卷积核大小（默认4）
-    parser.add_argument('--tcn_kernels',type=int,default=4)
-
-    # 上下文输入通道数（默认2，分别为v、d）
-    parser.add_argument('--num_context_input_c',type=int,default=2)
-    # 上下文输出通道数（默认7，分别为v、d、x、y、v_x、v_y、d_x、d_y）
-    parser.add_argument('--num_context_output_c',type=int,default=7)
-    # CNN层的卷积核大小（默认2）
-    parser.add_argument('--cnn_kernels',type=int,default=2)
-
-    # GAT（图注意力网络）注意力头数
-    parser.add_argument('--gat_heads',type=int, default=16)
-    # GAT层的隐藏层通道数（默认256）
-    parser.add_argument('--graph_hidden',type=int,default=256)
-    # Dropout概率（默认0.05）
-    parser.add_argument('--dropout',type=float,default=0.05)
-    # LeakyReLU负斜率
-    parser.add_argument('--alpha',type=float,default=0.2)
-    # cave的隐藏层
-    parser.add_argument('--cvae_hidden',type=int,default=128)
-    # 通道大小
-    parser.add_argument('--cvae_channel_size',type=int,default=128)
-    parser.add_argument('--cvae_layers',type=int,default=2)
-    parser.add_argument('--mlp_layer',type=int,default=32)
-    # 学习率
-    parser.add_argument('--lr',type=float,default=0.001)
+    ''' 在这里改数据集'''
+    # [修改 1] 默认数据集改为 7days1_small
+    parser.add_argument('--dataset_name', type=str, default='7days1s')
+    # [修改 2] RAG 目录改为 7days1_small_rag
+    parser.add_argument('--rag_dir', type=str, default='7days1_rag')
 
 
-    # 训练总轮次
-    parser.add_argument('--total_epochs',type=int, default=50)
-    # 数据分隔符
-    parser.add_argument('--delim',type=str,default=' ')
-    # 在训练过程中是否进行评估
+    parser.add_argument('--obs', type=int, default=11)
+    parser.add_argument('--preds', type=int, default=120)
+    parser.add_argument('--preds_step', type=int, default=10)
+
+    parser.add_argument('--input_channels', type=int, default=3)
+    parser.add_argument('--tcn_channel_size', type=int, default=256)
+    parser.add_argument('--tcn_layers', type=int, default=2)
+    parser.add_argument('--tcn_kernels', type=int, default=4)
+    parser.add_argument('--num_context_input_c', type=int, default=2)
+    parser.add_argument('--num_context_output_c', type=int, default=7)
+    parser.add_argument('--cnn_kernels', type=int, default=2)
+    parser.add_argument('--gat_heads', type=int, default=16)
+    parser.add_argument('--graph_hidden', type=int, default=256)
+    parser.add_argument('--dropout', type=float, default=0.05)
+    parser.add_argument('--alpha', type=float, default=0.2)
+    parser.add_argument('--cvae_hidden', type=int, default=128)
+    parser.add_argument('--cvae_channel_size', type=int, default=128)
+    parser.add_argument('--cvae_layers', type=int, default=2)
+    parser.add_argument('--mlp_layer', type=int, default=32)
+    parser.add_argument('--lr', type=float, default=0.001)
+
+    parser.add_argument('--total_epochs', type=int, default=100)
+    parser.add_argument('--delim', type=str, default=' ')
     parser.add_argument('--evaluate', type=bool, default=True)
     parser.add_argument('--save_model', type=bool, default=True)
-    parser.add_argument('--model_pth', type=str , default="/saved_models/")
+    parser.add_argument('--model_pth', type=str, default="/saved_models/")
 
+    parser.add_argument('--k', type=int, default=4)
+    parser.add_argument('--num_samples', type=int, default=15)
+    parser.add_argument('--traj_dim', type=int, default=3)
+    parser.add_argument('--agent_num', type=int, default=3)
 
-    # diffusion model参数
-    # 采样参数
-    parser.add_argument('--k', type=int , default=4)
-    # 采样数15
-    parser.add_argument('--num_samples', type=int , default=15)
-    # 轨迹维度=3   B*N*T*C
-    parser.add_argument('--traj_dim', type=int , default=3)
-    # 智能体数量为3
-    parser.add_argument('--agent_num', type=int , default=3)
+    # RAG 参数
+    parser.add_argument('--k_retrieve', type=int, default=20)
+    parser.add_argument('--n_clusters', type=int, default=3)
 
+    args = parser.parse_args()
 
-    # 解析命令行参数
-    args=parser.parse_args()
-    os.environ['CUDA_VISIBLE_DEVICES'] = '3'
-    ##Select device
-
+    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    ##Load test and train data加载数据
+    # 数据路径
     datapath = os.getcwd() + args.dataset_folder + args.dataset_name + "/processed_data/"
 
-    print("Loading Train Data from ",datapath + "train")
-    dataset_train = TrajectoryDataset(datapath + "train", obs_len=args.obs, pred_len=args.preds, step=args.preds_step, delim=args.delim)
+    print("Loading Train Data from ", datapath + "train")
+    # [修改] 不再传入 priors_path，回退到原始数据加载
+    dataset_train = TrajectoryDataset(
+        datapath + "train",
+        obs_len=args.obs,
+        pred_len=args.preds,
+        step=args.preds_step,
+        delim=args.delim
+    )
 
-    print("Loading Test Data from ",datapath + "test")
-    dataset_test = TrajectoryDataset(datapath + "test", obs_len=args.obs, pred_len=args.preds, step=args.preds_step, delim=args.delim)
-    # 初始化RAG（检索增强生成）系统
-    rag = TrajectoryDataset_RAG("./dataset/rag_file_7days2", obs_len=args.obs, pred_len=args.preds, step=args.preds_step, delim=args.delim).rag_system
+    print("Loading Test Data from ", datapath + "test")
+    dataset_test = TrajectoryDataset(
+        datapath + "test",
+        obs_len=args.obs,
+        pred_len=args.preds,
+        step=args.preds_step,
+        delim=args.delim
+    )
 
-    loader_train = DataLoader(dataset_train,batch_size=16,num_workers=4,shuffle=True,collate_fn=seq_collate_with_padding)
-    loader_test = DataLoader(dataset_test,batch_size=16,num_workers=4,shuffle=True,collate_fn=seq_collate_with_padding)
+    # [恢复] 初始化 RAG 系统 (因为要在线计算)
+    rag_path = f"./dataset/{args.rag_dir}"
+    print(f"Initializing RAG System from {rag_path}...")
+    rag = TrajectoryDataset_RAG(rag_path, obs_len=args.obs, pred_len=args.preds,
+                                step=args.preds_step, delim=args.delim).rag_system
+    embedder = TimeSeriesEmbedder()
 
+    # DataLoader (小数据集 Batch Size 保持 16 即可，因为在线计算 CPU 压力大)
+    loader_train = DataLoader(dataset_train, batch_size=16, num_workers=4, shuffle=True,
+                              collate_fn=seq_collate_with_padding)
+    loader_test = DataLoader(dataset_test, batch_size=16, num_workers=4, shuffle=True,
+                             collate_fn=seq_collate_with_padding)
 
     model = TrajAirNet(args)
     model.to(device)
 
-    #Resume继续训练
-    print(f"torch.cuda.is_available:{torch.cuda.is_available()}")
-
-    # 优化器
-    optimizer = optim.Adam(model.parameters(),lr=args.lr)
-
-    num_batches = len(loader_train)
+    print(f"torch.cuda.is_available: {torch.cuda.is_available()}")
+    optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
     print("Starting Training....")
 
-    for epoch in range(1, args.total_epochs+1):
-
+    for epoch in range(1, args.total_epochs + 1):
         model.train()
-        loss_batch = 0
-        batch_count = 0
-        tot_batch_count = 0
-        tot_loss = 0
-        embedder = TimeSeriesEmbedder()
         loss_total, loss_dt, loss_dc, count = 0, 0, 0, 0
+
         for batch in tqdm(loader_train):
-            batch_count += 1
-            tot_batch_count += 1
             batch = [tensor.to(device) for tensor in batch]
 
-            obs_traj , pred_traj, obs_traj_rel, pred_traj_rel, context, seq_start = batch
-            # 这个也要改，改为在之前就检索，或者之后检索
-            all_obs_traj_search_results = []
-            all_pred_traj_search_results = []
-            '''
-            1.检索拿到20条轨迹
-            '''
-            # for bs in range(obs_traj.shape[0]):
-            #     # embedding
-            #     obs_traj_embed_batch = embedder.embed_batch(np.transpose(obs_traj[bs].cpu().numpy(),(0, 2, 1)))
-            #     pred_traj_embed_batch = embedder.embed_batch(np.transpose(pred_traj[bs].cpu().numpy(),(0, 2, 1)))
-            #     # retriver
-            #     obs_traj_search_results = rag.search_batch(obs_traj_embed_batch.astype(np.float32))
-            #     pred_traj_search_results = rag.search_batch(pred_traj_embed_batch.astype(np.float32))
-            #
-            #     all_obs_traj_search_results.append(obs_traj_search_results)
-            #     all_pred_traj_search_results.append(pred_traj_search_results)
-
-            # for bs in range(obs_traj.shape[0]):
-            #     obs_traj_embed_batch = embedder.embed_batch(
-            #         np.transpose(obs_traj[bs].detach().cpu().numpy(), (0, 2, 1))
-            #     )
-            #     obs_traj_search_results = rag.search_batch(
-            #         obs_traj_embed_batch.astype(np.float32),
-            #         k=20
-            #
-            #     )
-            #     all_obs_traj_search_results.append(obs_traj_search_results)
-            '''在这里结束'''
-
+            # 解包数据
+            obs_traj, pred_traj, obs_traj_rel, pred_traj_rel, context, seq_start = batch[:6]  # 只取前6个，忽略可能的None
 
             num_agents = obs_traj.shape[1]
-            adj = torch.ones((num_agents,num_agents))
+            adj = torch.ones((num_agents, num_agents))
 
-            # optimizer.zero_grad()
-            # recon_y,m,var = model(torch.transpose(obs_traj,1,2),pred_traj, adj[0],torch.transpose(context,1,2),
-            #                       obs_traj_search_results, pred_traj_search_results)
-            # loss = 0
-            #
-            # for agent in range(num_agents):
-            #     loss += loss_func(recon_y[agent],torch.transpose(pred_traj[:,:,agent],0,1).unsqueeze(0),m[agent],var[agent])
-
-
-
-            # ####################################DiffusionLOSS######################
             optimizer.zero_grad()
-            loss_dist, loss_uncertainty = model(obs_traj,pred_traj, adj[0],torch.transpose(context,1,2),
-                                  all_obs_traj_search_results, all_pred_traj_search_results)
+
+            # [核心] 将 rag 和 embedder 传给模型
+            loss_dist, loss_uncertainty = model(
+                obs_traj,
+                pred_traj,
+                adj[0],
+                context.transpose(1, 2),
+                rag_system=rag,
+                embedder=embedder
+            )
 
             alpha = 100
-
             loss = loss_dist * alpha + loss_uncertainty
+
             loss_total += loss.item()
             loss_dt += loss_dist.item() * alpha
             loss_dc += loss_uncertainty.item()
+
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.model_initializer.parameters(), 1.)
             optimizer.step()
             count += 1
 
-            # break
-
-        print('[{}] Epoch: {}\t\tLoss: {:.6f}\tLoss Dist.: {:.6f}\tLoss Uncertainty: {:.6f}'.format(
+        print('[{}] Epoch: {}\tLoss: {:.6f}\tLoss Dist.: {:.6f}\tLoss Uncertainty: {:.6f}'.format(
             time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
             epoch, loss_total / count, loss_dt / count, loss_dc / count))
+
         if args.save_model:
-            loss = tot_loss/tot_batch_count
+            if not os.path.exists(os.getcwd() + args.model_pth):
+                os.makedirs(os.getcwd() + args.model_pth)
             model_path = os.getcwd() + args.model_pth + "model_" + args.dataset_name + "_" + str(epoch) + ".pt"
-            print("Saving model at",model_path)
+            print("Saving model at", model_path)
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'loss': loss,
-                }, model_path)
+                'loss': loss_total / count,
+            }, model_path)
 
-        # if args.evaluate:
         if epoch % 5 == 0:
             print("Starting Testing....")
-
             model.eval()
-            test_ade_loss, test_fde_loss = test(model,loader_test,device,rag)
+            test_ade_loss, test_fde_loss = test(model, loader_test, device, rag, embedder)
+            print("EPOCH: ", epoch, "Train Loss: ", loss_total / count, "Test ADE Loss: ", test_ade_loss,
+                  "Test FDE Loss: ", test_fde_loss)
 
-            print("EPOCH: ",epoch,"Train Loss: ",loss,"Test ADE Loss: ",test_ade_loss,"Test FDE Loss: ",test_fde_loss)
 
-if __name__=='__main__':
-
+if __name__ == '__main__':
     train()
-
-

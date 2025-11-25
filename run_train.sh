@@ -1,12 +1,20 @@
+#!/bin/bash
+# ================================================
+# Script: run_train.sh
+# Function: Run train.py in background with logging
+# ================================================
 
-##!/bin/bash
-echo "Running train.py in background..."
+
+echo ">>> Starting train.py ..."
+
+# 日志文件带时间戳命名
 log_file="train_$(date +%Y%m%d_%H%M%S).log"
 
-# 后台运行 train.py
+# 后台运行 train.py，标准输出和错误输出都写入日志
 nohup python train.py > "$log_file" 2>&1 &
 
-pid=$!   # 记录后台进程 PID
+# 获取后台进程 PID
+pid=$!
 
 echo ">>> train.py is now running in background"
 echo ">>> Log file: $log_file"
