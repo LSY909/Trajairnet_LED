@@ -62,7 +62,7 @@ class TransformerDenoisingModel(Module):
         self.concat4 = ConcatSquashLinear(context_dim, context_dim // 2, context_dim + 3)
         self.linear = ConcatSquashLinear(context_dim // 2, 3, context_dim + 3)
 
-    # [修正 1] forward 方法 (用于训练时的 Loss 计算)
+    #  forward 方法 (用于训练时的 Loss 计算)
     def forward(self, x, beta, context, mask, map_features=None):
         batch_size = x.size(0)
         beta = beta.view(batch_size, 1, 1)
@@ -79,7 +79,7 @@ class TransformerDenoisingModel(Module):
 
         time_emb = torch.cat([beta, torch.sin(beta), torch.cos(beta)], dim=-1)
 
-        # [关键修正] 拼接 final_ctx
+        #  拼接 final_ctx
         ctx_emb = torch.cat([time_emb, final_ctx], dim=-1)  # (B, 1, 256+3)
 
         x = self.concat1(ctx_emb, x)
@@ -91,7 +91,7 @@ class TransformerDenoisingModel(Module):
         trans = self.concat4(ctx_emb, trans)
         return self.linear(ctx_emb, trans)
 
-    # [修正 2] generate_accelerate 方法 (用于预测时的采样循环)
+    # generate_accelerate 方法 (用于预测时的采样循环)
     def generate_accelerate(self, x, beta, context, mask, map_features=None):
         batch_size = x.size(0)
         sample_num = x.shape[1]
@@ -109,7 +109,7 @@ class TransformerDenoisingModel(Module):
 
         time_emb = torch.cat([beta, torch.sin(beta), torch.cos(beta)], dim=-1)
 
-        # [关键修正] 拼接 final_ctx
+        # 拼接 final_ctx
         ctx_emb = torch.cat([time_emb, final_ctx], dim=-1).repeat(1, sample_num, 1).unsqueeze(2)
 
         x = self.concat1.batch_generate(ctx_emb, x).contiguous().view(-1, points_num, 512)

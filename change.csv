@@ -1,0 +1,65 @@
+# 导入新模块
+from model.qcnet_modules import QCNetRefinementDecoder
+
+class TrajAirNet(nn.Module):
+    def __init__(self, args):
+        super(TrajAirNet, self).__init__()
+        # ... (Encoder 部分保持不变，含 RouteEncoder 和 AgentMapAttention) ...
+
+        # =======================================================
+        # [修改] 移除 Diffusion, 添加 Refinement
+        # =======================================================
+        # 删除这些:
+        # self.model = CoreDenoisingModel().cuda() (删除)
+        # self.betas, self.alphas ... (删除)
+
+        # 保留 LED Initializer (作为 Proposal Module)
+        # 注意：k_pred 参数决定了生成的粗轨迹数量 (即 QCNet 的 K)
+        self.k_pred = 6 # 假设我们要预测 6 条模态
+        self.model_initializer = InitializationModel(..., k_pred=self.k_pred).cuda()
+
+        # 新增: QCNet Refinement Module
+        self.refinement_module = QCNetRefinementDecoder(
+            embed_dim=self.context_dim, # 256
+            future_steps=int(args.preds / args.preds_step),
+            num_modes=self.k_pred
+        )
+
+    def forward(self, x, y, adj, context, route_priors=None, sort=False):
+        # 1. 编码器部分 (保持不变，生成 social_context 和 fused_context)
+        # ... (RouteEncoder + AgentMapAttention 代码) ...
+        # 假设我们得到了 fused_context [B*A, 256]
+
+        # 2. Proposal 阶段 (LED Initializer)
+        # 使用 fused_context 引导 LED
+        led_input = self.map_to_led(fused_context)
+
+        # LED 输出的是分布参数，我们直接取均值作为 Anchors (粗轨迹)
+        # guess_mean shape: [B*A, K, T, 3]
+        _, guess_mean, _ = self.model_initializer(past_traj, traj_mask, led_input)
+
+        # 3. Refinement 阶段 (QCNet Decoder)
+        # 将 "粗轨迹" 和 "融合特征" 传入
+        refined_traj, scores = self.refinement_module(guess_mean, fused_context)
+
+        # 4. Loss 计算 (完全改变！)
+        # 这里不能再用 diffusion 的 loss 了，需要用 "Winner-Takes-All" Loss
+        # 找到 K 条轨迹中与真值 y 最近的那一条，只算那一 条的 loss
+
+        # y: [Batch, Agents, T, 3] -> [B*A, T, 3]
+        gt_traj = y.view(-1, y.shape[-2], y.shape[-1])[..., :2] # 只取 x,y
+
+        # 计算距离: [B*A, K]
+        dist = torch.norm(refined_traj - gt_traj.unsqueeze(1), dim=-1).sum(dim=-1)
+
+        # 找到最佳模态的索引
+        best_mode_idx = torch.argmin(dist, dim=-1) # [B*A]
+
+        # 1) 回归 Loss: 只优化最佳那条
+        best_traj = refined_traj[torch.arange(refined_traj.shape[0]), best_mode_idx]
+        reg_loss = F.smooth_l1_loss(best_traj, gt_traj)
+
+        # 2) 分类 Loss: 这里的 scores 应该逼近 best_mode_idx
+        cls_loss = F.cross_entropy(scores, best_mode_idx)
+
+        return reg_loss, cls_loss

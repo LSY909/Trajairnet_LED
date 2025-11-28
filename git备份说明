@@ -33,3 +33,11 @@ a649ad7 Initial commit
 
 git checkout -b backup-map-encoder e71b45d
 git checkout main
+
+
+
+# 1. 生成训练集先验
+python preprocess.py --set_type train
+
+# 2. 生成测试集先验
+python preprocess.py --set_type test

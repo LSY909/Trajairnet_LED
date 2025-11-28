@@ -11,7 +11,7 @@ echo ">>> Starting train.py ..."
 log_file="train_$(date +%Y%m%d_%H%M%S).log"
 
 # 后台运行 train.py，标准输出和错误输出都写入日志
-nohup python train.py > "$log_file" 2>&1 &
+nohup python -u train.py > "$log_file" 2>&1 &
 
 # 获取后台进程 PID
 pid=$!
