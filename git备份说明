@@ -1,7 +1,7 @@
 1.修改前备份
 python git_sync.py "BACKUP:开始将航线信息拿出，作为单独文件"
 2.修改后保存
-python git_sync.py "FEATURE: 在trajairnet.py加入检索和聚类"
+python git_sync.py "FEATURE: 在trajairnet.py使用QCNet，但是ADE FDE很大"
 3.查看提交历史
 git log --oneline
 4.执行回滚(会删除后续的修改)
@@ -41,3 +41,23 @@ python preprocess.py --set_type train
 
 # 2. 生成测试集先验
 python preprocess.py --set_type test
+
+
+
+(env_traj) root@89f0504224eb:/data/gjcl/lsy/trajairnet_led# git log --oneline
+3910f7a (HEAD -> backup-map-encoder, origin/backup-map-encoder) FEATURE: 在trajairnet.py使用QCNet，但是ADE FDE很大
+2b0a05e BACKUP:开始将航线信息拿出，作为单独文件
+8c411f2 FEATURE: 在trajairnet.py加入检索和聚类
+e71b45d FEATURE:map_encoder Done&train wancheng
+419df9f Update: GMM training backup
+b1b1cfd FEATURE:GMM&map_feature Done
+f49199f BACKUP:GMM&map_feature Doing
+2068955 FEATURE:map encoder Done
+46029e9 BACKUP:change the GMM
+a061725 FEATURE:search & GMM Done
+e02ff6f BACKUP:GMM DOing
+486b6a4 FEATURE:No Change
+5f11197 BACKUP:The total search&GMM
+caa31fe FEATURE: 在train中添加检索和聚类
+3d1ce1f BACKUP:检索之前的备份
+a649ad7 Initial commit

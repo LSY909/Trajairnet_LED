@@ -7,10 +7,10 @@ from torch.utils.data import DataLoader
 from model.utils import TrajectoryDataset, TrajectoryDataset_RAG, get_batch_route_priors
 from model.Rag_embedder import TimeSeriesEmbedder
 
-
+# 数据预处理--为每个轨迹样本计算航线 route priors
 def preprocess():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset_name', type=str, default='7days1')
+    parser.add_argument('--dataset_name', type=str, default='7days2')
     parser.add_argument('--rag_dir', type=str, default='111days_rag')
     parser.add_argument('--set_type', type=str, default='train', help='train or test')
 
@@ -28,7 +28,7 @@ def preprocess():
     rag_path = os.path.join(root, 'dataset', args.rag_dir)
     save_path = os.path.join(root, 'dataset', args.dataset_name, f'{args.set_type}_priors.pt')
 
-    # 2. 初始化 RAG 和 Embedder
+    # 2.RAG 和 Embedder
     print(f"Init RAG from {rag_path}...")
     rag = TrajectoryDataset_RAG(rag_path, args.obs, args.preds, args.preds_step).rag_system
     embedder = TimeSeriesEmbedder()
@@ -42,7 +42,7 @@ def preprocess():
     all_priors = []
     print(f"Computing Priors for {len(dataset)} sequences...")
     pred_len_steps = int(args.preds / args.preds_step)
-    # 4. 循环计算
+    # 4. 循环计算,调用 get_batch_route_priors 计算每个样本的 priors
     with torch.no_grad():
         for batch in tqdm(loader):
             #  obs: batch[0][0] -> Shape: (Agents, Obs_Len, 3)
@@ -62,8 +62,7 @@ def preprocess():
             # priors 输出: (1, Agents, Clusters, 12, 4)
             all_priors.append(priors.squeeze(0).cpu())
 
-    # 5. 拼接保存
-    # 把所有计算出来的 priors 拼起来
+    # 5.把所有计算出来的 priors 拼起来
     final_tensor = torch.cat(all_priors, dim=0)  # (Total_Agents_In_Dataset, Clusters, 12, 4)
 
     print(f"Saving priors to {save_path}")

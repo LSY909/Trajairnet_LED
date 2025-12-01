@@ -12,7 +12,7 @@ class LEDInitializer(nn.Module):
         self.fut_len = t_f
 
         # ============================================================
-        # [修改] 适配 TrajAirNet 的 Map Encoder 输出
+        # Map Encoder 输出
         # ============================================================
         # 输入维度：64 (来自 TrajAirNet 的 map_feature_dim)
         self.prior_input_dim = 64
@@ -26,7 +26,7 @@ class LEDInitializer(nn.Module):
         self.ego_scale_encoder = st_encoder()
         self.scale_encoder = MLP(1, 32, hid_feat=(4, 16), activation=nn.ReLU())
 
-        # [修改] Mean Decoder 输入维度: Ego(256) + Social(256) + Prior(32) = 544
+        # Mean Decoder 输入维度: Ego(256) + Social(256) + Prior(32) = 544
         self.mean_decoder = MLP(256 * 2 + self.prior_feature_dim, t_f * d_f, hid_feat=(256, 128), activation=nn.ReLU())
 
         self.var_decoder = MLP(256 * 2 + 32, self.output_dim, hid_feat=(1024, 1024), activation=nn.ReLU())
@@ -44,7 +44,7 @@ class LEDInitializer(nn.Module):
         ego_mean_embed = self.ego_mean_encoder(x)
         ego_scale_embed = self.ego_scale_encoder(x)
 
-        # [处理] 航线特征
+        #  航线特征
         if map_features is not None:
             # map_features 已经是 64 维特征
             priors_embed = self.prior_encoder(map_features)  # -> 32维
