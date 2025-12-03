@@ -15,8 +15,8 @@ from test import test
 def train():
     parser = argparse.ArgumentParser(description='Train TrajAirNet model (QCNet Style)')
     parser.add_argument('--dataset_folder', type=str, default='/dataset/')
-    parser.add_argument('--dataset_name', type=str, default='7days2')
-    parser.add_argument('--rag_dir', type=str, default='111days_rag')
+    parser.add_argument('--dataset_name', type=str, default='7days1')
+    parser.add_argument('--rag_dir', type=str, default='7days1_rag')
 
     # 轨迹参数
     parser.add_argument('--obs', type=int, default=11)
@@ -167,7 +167,7 @@ def train():
             print("Saved model to", model_path)
 
         # 评估
-        if args.evaluate and epoch % 5 == 0:
+        if args.evaluate and epoch % 1 == 0:
             print("Starting test...")
             test_ade_loss, test_fde_loss = test(model, loader_test, device)
             print("EPOCH: ",epoch,"Train Loss: ",loss,"Test ADE Loss: ",test_ade_loss,"Test FDE Loss: ",test_fde_loss)

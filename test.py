@@ -12,7 +12,7 @@ from model.utils import TrajectoryDataset, seq_collate_with_padding
 def main():
     parser = argparse.ArgumentParser(description='Test TrajAirNet model')
     parser.add_argument('--dataset_folder', type=str, default='/dataset/')
-    parser.add_argument('--dataset_name', type=str, default='7days2')
+    parser.add_argument('--dataset_name', type=str, default='7days1')
     parser.add_argument('--epoch', type=int, default=20)
     parser.add_argument('--obs', type=int, default=11)
     parser.add_argument('--preds', type=int, default=120)
@@ -43,7 +43,7 @@ def main():
     # parser.add_argument('--agent_num', type=int, default=3)
 
     # QCNet / RAG 参数
-    parser.add_argument('--k_retrieve', type=int, default=20)
+    parser.add_argument('--k_retrieve', type=int, default=100)
     parser.add_argument('--n_clusters', type=int, default=3)
 
     args = parser.parse_args()
@@ -115,7 +115,8 @@ def test(model, loader_test, device):
     with torch.no_grad():
         for batch in tqdm(loader_test, desc="Testing"):
             tot_batch += 1
-            batch = [tensor.to(device) for tensor in batch]
+            # 只有当 tensor 不是 None 时才移动到 device，否则保持为 None
+            batch = [tensor.to(device) if tensor is not None else None for tensor in batch]
 
             # 解包
             obs_traj, pred_traj, _, _, context, _, route_priors = batch
@@ -124,7 +125,7 @@ def test(model, loader_test, device):
             num_agents = obs_traj.shape[1]
             adj = torch.ones((num_agents, num_agents)).to(device)
 
-            # 推理: [B*A, K, T, 2]
+            # 推理: [B*A, K, T, 3]
             recon_y_flat = model.inference(
                 obs_traj,
                 pred_traj,
@@ -133,7 +134,7 @@ def test(model, loader_test, device):
                 route_priors=route_priors
             )
 
-            # 恢复形状: [Batch, Agents, K, T, 2]
+            # 恢复形状: [Batch, Agents, K, T,3]
             K = recon_y_flat.shape[1]
             T_pred = recon_y_flat.shape[2]
             recon_y = recon_y_flat.view(batch_size, num_agents, K, T_pred, 3)
