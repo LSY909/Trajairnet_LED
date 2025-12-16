@@ -16,19 +16,12 @@ from test import test
 import time
 
 def train():
-    # import pydevd_pycharm
-    # pydevd_pycharm.settrace(
-    #     'localhost',
-    #     port=9022,
-    #     suspend=True
-    # )
-
     ##Dataset params
     # 创建参数解析器，用于解析命令行参数
     parser=argparse.ArgumentParser(description='Train TrajAirNet model')
     parser.add_argument('--dataset_folder',type=str,default='/dataset/')
-    # parser.add_argument('--dataset_name',type=str,default='7days1')
-    parser.add_argument('--dataset_name',type=str,default='111_days')
+    parser.add_argument('--dataset_name',type=str,default='7days1')
+    # parser.add_argument('--dataset_name',type=str,default='111_days')
     #parser.add_argument('--dataset_name',type=str,default='7days1_small')
     # 观测轨迹长度
     parser.add_argument('--obs',type=int,default=11)
@@ -76,7 +69,7 @@ def train():
 
 
     # 训练总轮次
-    parser.add_argument('--total_epochs',type=int, default=50)
+    parser.add_argument('--total_epochs',type=int, default=20)
     # 数据分隔符
     parser.add_argument('--delim',type=str,default=' ')
     # 在训练过程中是否进行评估
@@ -167,9 +160,7 @@ def train():
             loss_dist, loss_uncertainty = model(obs_traj,pred_traj, adj[0],torch.transpose(context,1,2),
                                   rag_system=rag,embedder=embedder)
 
-            # loss_dist, loss_uncertainty = model(obs_traj, pred_traj, adj[0], context.transpose(1, 2),
-            #                                     all_obs_traj_search_results, all_pred_traj_search_results,
-            #                                     route_priors=route_priors)  # <--- 传入
+        
 
             alpha = 100
 

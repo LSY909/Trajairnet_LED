@@ -75,11 +75,8 @@ def main():
     model = TrajAirNet(args)
     model.to(device)
 
-    # model_path =  os.getcwd() + args.model_dir + "model_" + args.dataset_name + "_" + str(args.epoch) + ".pt"
-    # model_path =  os.getcwd() + args.model_dir + "model_traj_air_ZH9102_5.pt"
+  
     model_path = os.path.join(os.getcwd() + args.model_dir + f"model_{args.dataset_name}_{args.epoch}.pt")
-    #model_path =  os.getcwd() + args.model_dir + "model_7days1_1.pt"
-
 
     checkpoint = torch.load(model_path, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
@@ -134,8 +131,16 @@ def test(model,loader_test,device,rag):
         # recon_y_all = model.inference(torch.transpose(obs_traj_all,1,2),z,adj,torch.transpose(context,1,2),
         
         # obs_traj_search_results, pred_traj_search_results)
-        recon_y_all = model.inference(obs_traj_all, pred_traj_all, adj[0], torch.transpose(context, 1, 2),
-                                            all_obs_traj_search_results, all_pred_traj_search_results)
+        recon_y_all = model.inference(
+            obs_traj_all,
+            pred_traj_all,
+            adj[0],
+            torch.transpose(context, 1, 2),
+            all_obs_traj_search_results,
+            all_pred_traj_search_results,
+            rag_system=rag,
+            embedder=embedder,
+        )
 
         recon_y_all = torch.reshape(recon_y_all,(batch_size,
                                                  num_agents,

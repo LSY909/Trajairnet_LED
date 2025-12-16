@@ -142,7 +142,17 @@ class TrajAirNet(nn.Module):
             ctrs.reshape(*obs_traj.shape[:2], self.n_clusters, 12, 3) + obs_np[:, :, -1, None, None]).float().to(
             obs_traj.device)
 
-    def forward(self, x, y, adj, context, obs_traj_search_results, pred_traj_search_results, sort=False):
+    def forward(
+            self,
+            x,
+            y,
+            adj,
+            context,
+            obs_traj_search_results=None,
+            pred_traj_search_results=None,
+            rag_system=None,
+            embedder=None,
+            sort=False):
 
         batch_size = x.shape[0]
         agent_num = x.shape[1]
@@ -157,7 +167,7 @@ class TrajAirNet(nn.Module):
         fut_traj = fut_traj.permute(0,2,1)
         past_traj = torch.reshape(x,(batch_size * agent_num, x.shape[2],x.shape[3]))
         past_traj = past_traj.permute(0,2,1)
-        traj_mask = torch.zeros(batch_size * agent_num, batch_size * agent_num).cuda()
+        traj_mask = torch.zeros(batch_size * agent_num, batch_size * agent_num, device=x.device)
         for i in range(batch_size):
             traj_mask[i * agent_num:(i + 1) * agent_num, i * agent_num:(i + 1) * agent_num] = 1.
         sample_prediction, mean_estimation, variance_estimation = self.model_initializer(past_traj, traj_mask)
@@ -182,7 +192,16 @@ class TrajAirNet(nn.Module):
         return loss_dist, loss_uncertainty
 
 
-    def inference(self, x, y, adj, context, obs_traj_search_results, pred_traj_search_results, ):
+    def inference(
+            self,
+            x,
+            y,
+            adj,
+            context,
+            obs_traj_search_results=None,
+            pred_traj_search_results=None,
+            rag_system=None,
+            embedder=None):
         # 智能体数量
         batch_size = x.shape[0]
         agent_num = x.shape[1]
@@ -204,7 +223,7 @@ class TrajAirNet(nn.Module):
         fut_traj = fut_traj.permute(0, 2, 1)
         past_traj = torch.reshape(x, (batch_size * agent_num, x.shape[2], x.shape[3]))
         past_traj = past_traj.permute(0, 2, 1)
-        traj_mask = torch.zeros(batch_size * agent_num, batch_size * agent_num).cuda()
+        traj_mask = torch.zeros(batch_size * agent_num, batch_size * agent_num, device=x.device)
         for i in range(batch_size):
             traj_mask[i * agent_num:(i + 1) * agent_num, i * agent_num:(i + 1) * agent_num] = 1.
         sample_prediction, mean_estimation, variance_estimation = self.model_initializer(past_traj, traj_mask)
