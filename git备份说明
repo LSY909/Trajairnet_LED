@@ -14,3 +14,8 @@ python git_sync.py "BACKUP:"
 python git_sync.py "FEATURE: "
 git log --oneline
 git reset --hard <备份的ID点>
+
+
+python git_sync.py "BACKUP: 添加IAD和MTR前的备份"
+
+python git_sync.py "FEATURE: 添加dense future prediction"

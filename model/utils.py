@@ -22,7 +22,7 @@ class TrajectoryDataset(Dataset):
     
     def __init__(
         self, data_dir, obs_len=11, pred_len=120, skip=8,step=10,
-        min_agent=0, delim=' '):
+        min_agent=0, delim=' ', route_priors_path: str = None):
         """
         Args:
         数据集文件所在目录
@@ -157,6 +157,14 @@ class TrajectoryDataset(Dataset):
             n_agents = end - start
             self.max_agents = n_agents if n_agents > self.max_agents else self.max_agents
 
+        # 预计算的航线先验（可选）
+        self.route_priors = None
+        if route_priors_path is not None:
+            ckpt = torch.load(route_priors_path, map_location='cpu')
+            self.route_priors = ckpt["route_priors"] if isinstance(ckpt, dict) and "route_priors" in ckpt else ckpt
+            if len(self.route_priors) != self.num_seq:
+                raise ValueError(f"route_priors length mismatch: {len(self.route_priors)} != {self.num_seq}")
+
     def __len__(self):
         return self.num_seq
     
@@ -170,6 +178,8 @@ class TrajectoryDataset(Dataset):
             self.obs_traj[start:end, :], self.pred_traj[start:end, :],
             self.obs_traj_rel[start:end, :], self.pred_traj_rel[start:end, :], self.obs_context[start:end, :]
         ]
+        if self.route_priors is not None:
+            out.append(self.route_priors[index])
         return out
 ### 辅助类（字典的扩展类，支持点号访问属性）
 class DotDict(dict):
@@ -527,8 +537,12 @@ def seq_collate_with_padding(data):
     """
     padding_num = 7  # 最大智能体数量
 
-    # 解包 batch 数据
-    obs_seq_list, pred_seq_list, obs_seq_rel_list, pred_seq_rel_list, context_list = zip(*data)
+    # 解包 batch 数据（兼容可选 route_priors）
+    has_route_priors = len(data[0]) == 6
+    if has_route_priors:
+        obs_seq_list, pred_seq_list, obs_seq_rel_list, pred_seq_rel_list, context_list, route_priors_list = zip(*data)
+    else:
+        obs_seq_list, pred_seq_list, obs_seq_rel_list, pred_seq_rel_list, context_list = zip(*data)
 
     # 新列表保存处理后的 batch
     new_obs_seq_list = []
@@ -536,6 +550,7 @@ def seq_collate_with_padding(data):
     new_obs_seq_rel_list = []
     new_pred_seq_rel_list = []
     new_context_list = []
+    new_route_priors_list = [] if has_route_priors else None
 
     for i in range(len(data)):
         agent_num = obs_seq_list[i].shape[0]
@@ -548,6 +563,8 @@ def seq_collate_with_padding(data):
             new_obs_seq_rel_list.append(obs_seq_rel_list[i][:padding_num, :, :])
             new_pred_seq_rel_list.append(pred_seq_rel_list[i][:padding_num, :, :])
             new_context_list.append(context_list[i][:padding_num, :, :])
+            if has_route_priors:
+                new_route_priors_list.append(route_priors_list[i][:padding_num])
             continue
 
         # agent_num < padding_num，需要重复 padding
@@ -568,6 +585,14 @@ def seq_collate_with_padding(data):
         new_obs_seq_rel_list.append(torch.cat([obs_seq_rel_list[i], torch.cat(obs_rel_padding_list, dim=0)], dim=0))
         new_pred_seq_rel_list.append(torch.cat([pred_seq_rel_list[i], torch.cat(pred_rel_padding_list, dim=0)], dim=0))
         new_context_list.append(torch.cat([context_list[i], torch.cat(context_padding_list, dim=0)], dim=0))
+        if has_route_priors:
+            rp = route_priors_list[i]
+            # 允许 rp 已经是 padding_num 的情况（直接用）；否则按相同 index_list 规则补齐
+            if rp.shape[0] >= padding_num:
+                new_route_priors_list.append(rp[:padding_num])
+            else:
+                rp_pad = [rp[idx].detach().clone().unsqueeze(0) for idx in index_list]
+                new_route_priors_list.append(torch.cat([rp, torch.cat(rp_pad, dim=0)], dim=0))
 
     # 生成 seq_start_end（可根据需要修改）
     seq_start_end = torch.tensor([1, 2, 3, 4, 5])
@@ -580,6 +605,9 @@ def seq_collate_with_padding(data):
     pred_traj_rel = torch.stack(new_pred_seq_rel_list, dim=0)
     context = torch.stack(new_context_list, dim=0)
     ## 观察轨迹、预测轨迹、观察轨迹的相对坐标（前十一个点的相对移动距离）、预测轨迹的相对坐标、上下文、序列开始结束索引（属于哪个场景）
+    if has_route_priors:
+        route_priors = torch.stack(new_route_priors_list, dim=0)
+        return obs_traj, pred_traj, obs_traj_rel, pred_traj_rel, context, seq_start_end, route_priors
     return obs_traj, pred_traj, obs_traj_rel, pred_traj_rel, context, seq_start_end
 
 ## 损失函数（包括轨迹重建损失和KLD损失）

@@ -54,22 +54,36 @@ def main():
     parser.add_argument('--num_samples', type=int , default=20)
     parser.add_argument('--traj_dim', type=int , default=3)
     parser.add_argument('--agent_num', type=int , default=3)
+    parser.add_argument('--dense_prior_weight', type=float, default=0.5)
+    parser.add_argument('--route_prior_mode', type=str, default='per_batch',
+                        choices=['per_agent', 'per_batch', 'topk', 'none'])
+    parser.add_argument('--route_priors_test', type=str, default='')
 
     args=parser.parse_args()
 
 
     ##Select device
-    os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+    os.environ['CUDA_VISIBLE_DEVICES'] = '4'
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     ##Load data
     datapath = os.getcwd() + args.dataset_folder + args.dataset_name + "/processed_data/"
     print("Loading Test Data from ",datapath + "test")
-    dataset_test = TrajectoryDataset(datapath + "test", obs_len=args.obs, pred_len=args.preds, step=args.preds_step, delim=args.delim)
+    route_priors_test = args.route_priors_test if args.route_priors_test else None
+    dataset_test = TrajectoryDataset(
+        datapath + "test",
+        obs_len=args.obs,
+        pred_len=args.preds,
+        step=args.preds_step,
+        delim=args.delim,
+        route_priors_path=route_priors_test,
+    )
     # loader_test = DataLoader(dataset_test,batch_size=64,num_workers=4,shuffle=True,collate_fn=seq_collate)
     loader_test = DataLoader(dataset_test,batch_size=8,num_workers=4,shuffle=True,collate_fn=seq_collate_with_padding)
 
-    rag = TrajectoryDataset_RAG("./dataset/rag_files", obs_len=args.obs, pred_len=args.preds, step=args.preds_step, delim=args.delim).rag_system
+    rag = None
+    if route_priors_test is None:
+        rag = TrajectoryDataset_RAG("./dataset/rag_files", obs_len=args.obs, pred_len=args.preds, step=args.preds_step, delim=args.delim).rag_system
 
     ##Load model
     model = TrajAirNet(args)
@@ -105,7 +119,11 @@ def test(model,loader_test,device,rag):
     for batch in tqdm(loader_test):
         tot_batch += 1
         batch = [tensor.to(device) for tensor in batch]
-        obs_traj_all , pred_traj_all, obs_traj_rel_all, pred_traj_rel_all, context, seq_start  = batch
+        if len(batch) == 7:
+            obs_traj_all, pred_traj_all, obs_traj_rel_all, pred_traj_rel_all, context, seq_start, route_priors = batch
+        else:
+            obs_traj_all, pred_traj_all, obs_traj_rel_all, pred_traj_rel_all, context, seq_start = batch
+            route_priors = None
         batch_size = obs_traj_all.shape[0]
 
         all_obs_traj_search_results = []
@@ -138,6 +156,7 @@ def test(model,loader_test,device,rag):
             torch.transpose(context, 1, 2),
             all_obs_traj_search_results,
             all_pred_traj_search_results,
+            route_priors=route_priors,
             rag_system=rag,
             embedder=embedder,
         )

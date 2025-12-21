@@ -1,0 +1,45 @@
+7days1:
+ori:
+EPOCH:  20 Train Loss:  0.0 Test ADE Loss:  0.29678377764624636 Test FDE Loss:  0.5192857851410283
+RAG+GMM：
+EPOCH:  20 Train Loss:  0.0 Test ADE Loss:  0.2971841620198223 Test FDE Loss:  0.5136183510647341
+RAG+GMM+Dense Future Predictor:
+EPOCH:  20 Train Loss:  0.0 Test ADE Loss:  0.2902229894684712 Test FDE Loss:  0.5019225067575568
+
+7days2:
+ori:
+
+
+
+
+7days1_small:
+ori:
+EPOCH:  20 Train Loss:  0.0 Test ADE Loss:  0.7420065774220146 Test FDE Loss:  1.0638124574662282
+EPOCH:  20 Train Loss:  0.0 Test ADE Loss:  0.723396449707074  Test FDE Loss:  1.0674994562681095
+RAG+GMM+Dense Future Predictor:
+EPOCH:  20 Train Loss:  0.0 Test ADE Loss:  0.6401124589142719 Test FDE Loss:  0.9864609791397084
+EPOCH:  20 Train Loss:  0.0 Test ADE Loss:  0.6690774516414397 Test FDE Loss:  0.9784613731994772
+
+
+
+7days2:
+ori:
+EPOCH:  20 Train Loss:  0.0 Test ADE Loss:  0.3040788479132294 Test FDE Loss:  0.5191383325207263
+RAG+GMM+Dense Future Predictor:
+EPOCH:  20 Train Loss:  0.0 Test ADE Loss:  0.3131347617681986 Test FDE Loss:  0.5318795316542525
+
+
+
+修改dense_prior_weight的权重为0.0和0.5：
+(env_traj) root@89f0504224eb:/data/gjcl/lsy/trajairnet_led# /opt/conda/envs/env_traj/bin/python test.py \
+  --dataset_name 7days1_small \
+  --epoch 10 \
+  --route_priors_test ./dataset/route_priors_7days1_small_test.pt \
+  --dense_prior_weight 0.0
+Test ADE Loss:  1.0482408020968865 Test FDE Loss:  1.4264442856353121
+(env_traj) root@89f0504224eb:/data/gjcl/lsy/trajairnet_led# /opt/conda/envs/env_traj/bin/python test.py \
+  --dataset_name 7days1_small \
+  --epoch 10 \
+  --route_priors_test ./dataset/route_priors_7days1_small_test.pt \
+  --dense_prior_weight 0.5 
+Test ADE Loss:  0.7908878138286246 Test FDE Loss:  1.2305835943202117

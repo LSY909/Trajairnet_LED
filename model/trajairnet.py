@@ -19,6 +19,7 @@ import pdb
 from models.model_led_initializer import LEDInitializer as InitializationModel
 from models.model_diffusion import TransformerDenoisingModel as CoreDenoisingModel
 from model.Rag_embedder import TimeSeriesEmbedder # 引入 Embedder
+from model.dense_future_prediction import DenseFuturePredictor
 
 ## 去噪步数
 NUM_Tau = 5
@@ -103,6 +104,11 @@ class TrajAirNet(nn.Module):
         self.k_retrieve = getattr(args, 'k_retrieve', 100)
         self.n_clusters = getattr(args, 'n_clusters', 3)
         self.traj_dim = getattr(args, 'traj_dim', 3)
+        self.dense_prior_weight = float(getattr(args, 'dense_prior_weight', 0.5))
+        self.route_prior_mode = getattr(args, 'route_prior_mode', 'per_batch')
+
+        # Dense future prediction (MTR module) as a learnable prior
+        self.dense_future_predictor = DenseFuturePredictor(hidden_dim=256, num_future_frames=n_classes)
         '''
         添加结束
         '''
@@ -126,21 +132,52 @@ class TrajAirNet(nn.Module):
     def _get_route_priors(self, obs_traj, rag_system, embedder):
 
         if rag_system is None or embedder is None:return None
+        if getattr(self, 'route_prior_mode', 'per_batch') == 'none':
+            return None
 
-        obs_np = obs_traj.detach().cpu().numpy()
-        # flat_obs: (B*N, 11, 3)
-        search_res = rag_system.search_batch(
-            embedder.embed_batch(obs_np.reshape(-1, obs_traj.shape[2], 3).astype(np.float32)), k=self.k_retrieve)
-        # raw: (B*N, K, 12, 3), rel: (B*N, K, 12, 3)
+        # obs_traj: (B, A, 3, Obs) -> flat_obs: (B*A, Obs, 3)
+        obs_np = obs_traj.detach().permute(0, 1, 3, 2).contiguous().cpu().numpy()
+        flat_obs = obs_np.reshape(-1, obs_traj.shape[-1], 3).astype(np.float32)
+        search_res = rag_system.search_batch(embedder.embed_batch(flat_obs), k=self.k_retrieve)
+        # raw: (B*N, K, T, 3), rel: (B*N, K, T, 3)
         raw = np.array([[np.array(i['pred_data']).T if np.array(i['pred_data']).shape[0] == 3 else np.array(
             i['pred_data']) for i in s] for s in search_res])
+        t_f = raw.shape[2]
         rel = raw - raw[:, :, 0:1, :]
-        # ctrs: (B*N, N_CLUSTERS, 12, 3)
-        ctrs = np.array([GaussianMixture(self.n_clusters, 'diag', random_state=0).fit(
-            r.reshape(self.k_retrieve, -1)).means_.reshape(self.n_clusters, 12, 3) for r in rel])
-        return torch.tensor(
-            ctrs.reshape(*obs_traj.shape[:2], self.n_clusters, 12, 3) + obs_np[:, :, -1, None, None]).float().to(
-            obs_traj.device)
+        mode = getattr(self, 'route_prior_mode', 'per_batch')
+        if mode == 'topk':
+            # 直接取 topK 的相对形状作为“簇中心”（最快，不做聚类）
+            ctrs = rel[:, :self.n_clusters]  # (B*N, C, T, 3)
+        elif mode == 'per_agent':
+            # 每个 agent 单独拟合 GMM（最慢，但最细）
+            ctrs = np.array([
+                GaussianMixture(
+                    n_components=self.n_clusters,
+                    covariance_type='diag',
+                    random_state=0
+                ).fit(r.reshape(self.k_retrieve, -1)).means_.reshape(self.n_clusters, t_f, 3)
+                for r in rel
+            ])
+        else:
+            # per_batch：整个 batch 只拟合一次 GMM（快很多）
+            gmm = GaussianMixture(
+                n_components=self.n_clusters,
+                covariance_type='diag',
+                random_state=0
+            ).fit(rel.reshape(-1, t_f * 3))
+            ctrs = gmm.means_.reshape(self.n_clusters, t_f, 3)  # (C, T, 3)
+
+        # 取每个 agent 的最后观测点作为起点 (B, A, 3) -> (B, A, 1, 1, 3)
+        last_pos = obs_np[:, :, -1, :][..., None, None, :]
+
+        if mode == 'topk':
+            route_priors = ctrs.reshape(*obs_traj.shape[:2], self.n_clusters, t_f, 3) + last_pos
+        elif mode == 'per_agent':
+            route_priors = ctrs.reshape(*obs_traj.shape[:2], self.n_clusters, t_f, 3) + last_pos
+        else:
+            # ctrs: (C, T, 3) -> (B, A, C, T, 3)
+            route_priors = ctrs[None, None, :, :, :] + last_pos
+        return torch.tensor(route_priors).float().to(obs_traj.device)
 
     def forward(
             self,
@@ -150,6 +187,7 @@ class TrajAirNet(nn.Module):
             context,
             obs_traj_search_results=None,
             pred_traj_search_results=None,
+            route_priors=None,
             rag_system=None,
             embedder=None,
             sort=False):
@@ -158,8 +196,12 @@ class TrajAirNet(nn.Module):
         agent_num = x.shape[1]
         topk = 5
 
-        '''获取航线先验'''
-        route_priors = self._get_route_priors(x, rag_system, embedder)
+        # =======================
+        # Priors: route_priors (RAG+GMM) + dense future (learnable)
+        # =======================
+        # 如果外部传入了预计算 priors，就直接用；否则在线检索/聚类生成
+        if route_priors is None:
+            route_priors = self._get_route_priors(x, rag_system, embedder)  # (B, A, C, T, 3) or None
 
         # 后面仿照LED方法调整数据
         #pdb.set_trace()
@@ -170,10 +212,26 @@ class TrajAirNet(nn.Module):
         traj_mask = torch.zeros(batch_size * agent_num, batch_size * agent_num, device=x.device)
         for i in range(batch_size):
             traj_mask[i * agent_num:(i + 1) * agent_num, i * agent_num:(i + 1) * agent_num] = 1.
-        sample_prediction, mean_estimation, variance_estimation = self.model_initializer(past_traj, traj_mask)
-        # 对应论文框架图相乘部分内容
-        sample_prediction, mean_estimation, variance_estimation = self.model_initializer(past_traj, traj_mask,
-                                                                                         route_priors)
+
+        # DenseFuturePredictor: 输出 (B, A, T, 7)，我们只用前两维位置作为 mean 的先验
+        dense_xy_flat = None
+        if self.dense_prior_weight > 0:
+            obj_pos = x[:, :, :, -1]  # (B, A, 3)
+            obj_mask = torch.ones((batch_size, agent_num), device=x.device, dtype=torch.bool)
+            obj_feature = self.model_initializer.ego_mean_encoder(past_traj).view(batch_size, agent_num, -1)  # (B, A, 256)
+            _, pred_dense_trajs = self.dense_future_predictor(obj_feature, obj_mask, obj_pos)
+            dense_xy_flat = pred_dense_trajs[..., 0:2].reshape(batch_size * agent_num, pred_dense_trajs.shape[2], 2)
+
+        # LED initializer：route_priors 在 initializer 内被编码并影响 mean/var/scale
+        sample_prediction, mean_estimation, variance_estimation = self.model_initializer(
+            past_traj, traj_mask, route_priors
+        )
+
+        # 融合 dense future prior 到 mean_estimation 的前两维 (x,y)
+        if dense_xy_flat is not None:
+            w = self.dense_prior_weight
+            mean_estimation = mean_estimation.clone()
+            mean_estimation[:, :, 0:2] = (1.0 - w) * mean_estimation[:, :, 0:2] + w * dense_xy_flat
         sample_prediction = torch.exp(variance_estimation / 2)[
                                 ..., None, None] * sample_prediction / sample_prediction.std(dim=1).mean(dim=(1, 2))[:,
                                                                        None, None, None]
@@ -200,6 +258,7 @@ class TrajAirNet(nn.Module):
             context,
             obs_traj_search_results=None,
             pred_traj_search_results=None,
+            route_priors=None,
             rag_system=None,
             embedder=None):
         # 智能体数量
@@ -217,7 +276,9 @@ class TrajAirNet(nn.Module):
         '''
         RAG/GMM 聚类
         '''
-        route_priors = self._get_route_priors(x, rag_system, embedder)
+        if route_priors is None:
+         route_priors = self._get_route_priors(x, rag_system, embedder)
+         
         # 后面仿照LED方法调整数据
         fut_traj = torch.reshape(y, (batch_size * agent_num, y.shape[2], y.shape[3]))
         fut_traj = fut_traj.permute(0, 2, 1)
@@ -226,7 +287,21 @@ class TrajAirNet(nn.Module):
         traj_mask = torch.zeros(batch_size * agent_num, batch_size * agent_num, device=x.device)
         for i in range(batch_size):
             traj_mask[i * agent_num:(i + 1) * agent_num, i * agent_num:(i + 1) * agent_num] = 1.
-        sample_prediction, mean_estimation, variance_estimation = self.model_initializer(past_traj, traj_mask)
+
+        dense_xy_flat = None
+        if self.dense_prior_weight > 0:
+            obj_pos = x[:, :, :, -1]  # (B, A, 3)
+            obj_mask = torch.ones((batch_size, agent_num), device=x.device, dtype=torch.bool)
+            obj_feature = self.model_initializer.ego_mean_encoder(past_traj).view(batch_size, agent_num, -1)
+            _, pred_dense_trajs = self.dense_future_predictor(obj_feature, obj_mask, obj_pos)
+            dense_xy_flat = pred_dense_trajs[..., 0:2].reshape(batch_size * agent_num, pred_dense_trajs.shape[2], 2)
+
+        sample_prediction, mean_estimation, variance_estimation = self.model_initializer(past_traj, traj_mask, route_priors)
+
+        if dense_xy_flat is not None:
+            w = self.dense_prior_weight
+            mean_estimation = mean_estimation.clone()
+            mean_estimation[:, :, 0:2] = (1.0 - w) * mean_estimation[:, :, 0:2] + w * dense_xy_flat
         # 对应论文框架图相乘部分内容
         sample_prediction = torch.exp(variance_estimation / 2)[
                                 ..., None, None] * sample_prediction / sample_prediction.std(dim=1).mean(dim=(1, 2))[:,

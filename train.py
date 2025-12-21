@@ -21,8 +21,6 @@ def train():
     parser=argparse.ArgumentParser(description='Train TrajAirNet model')
     parser.add_argument('--dataset_folder',type=str,default='/dataset/')
     parser.add_argument('--dataset_name',type=str,default='7days1')
-    # parser.add_argument('--dataset_name',type=str,default='111_days')
-    #parser.add_argument('--dataset_name',type=str,default='7days1_small')
     # 观测轨迹长度
     parser.add_argument('--obs',type=int,default=11)
     # 预测轨迹长度
@@ -94,28 +92,73 @@ def train():
     # RAG 参数
     parser.add_argument('--k_retrieve', type=int, default=100)
     parser.add_argument('--n_clusters', type=int, default=3)
+    # DenseFuturePredictor 先验融合权重（0 表示关闭）
+    parser.add_argument('--dense_prior_weight', type=float, default=0.5)
+    # 航线先验生成模式：per_agent(最慢/最细), per_batch(快), topk(最快), none(关闭)
+    parser.add_argument('--route_prior_mode', type=str, default='per_batch',
+                        choices=['per_agent', 'per_batch', 'topk', 'none'])
+    # 使用离线预计算的航线先验（会跳过在线检索/聚类，显著提速）
+    parser.add_argument('--route_priors_train', type=str, default='')
+    parser.add_argument('--route_priors_test', type=str, default='')
 
 
     # 解析命令行参数
     args=parser.parse_args()
-    os.environ['CUDA_VISIBLE_DEVICES'] = '3'
+    os.environ['CUDA_VISIBLE_DEVICES'] = '4'
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     datapath = os.getcwd() + args.dataset_folder + args.dataset_name + "/processed_data/"
 
     print("Loading Train Data from ",datapath + "train")
-    dataset_train = TrajectoryDataset(datapath + "train", obs_len=args.obs, pred_len=args.preds, step=args.preds_step, delim=args.delim)
+    route_priors_train = args.route_priors_train if args.route_priors_train else None
+    dataset_train = TrajectoryDataset(
+        datapath + "train",
+        obs_len=args.obs,
+        pred_len=args.preds,
+        step=args.preds_step,
+        delim=args.delim,
+        route_priors_path=route_priors_train,
+    )
 
     print("Loading Test Data from ",datapath + "test")
-    dataset_test = TrajectoryDataset(datapath + "test", obs_len=args.obs, pred_len=args.preds, step=args.preds_step, delim=args.delim)
+    route_priors_test = args.route_priors_test if args.route_priors_test else None
+    dataset_test = TrajectoryDataset(
+        datapath + "test",
+        obs_len=args.obs,
+        pred_len=args.preds,
+        step=args.preds_step,
+        delim=args.delim,
+        route_priors_path=route_priors_test,
+    )
     # 初始化RAG（检索增强生成）系统
     #rag = TrajectoryDataset_RAG("./dataset/rag_file_7days2", obs_len=args.obs, pred_len=args.preds, step=args.preds_step, delim=args.delim).rag_system
     '''添加的初始化检索系统'''
-    print("Initializing RAG System...")
-    rag = TrajectoryDataset_RAG("./dataset/rag_file_7days2", obs_len=args.obs, pred_len=args.preds,
-                                step=args.preds_step, delim=args.delim).rag_system
-    embedder = TimeSeriesEmbedder()
-    loader_train = DataLoader(dataset_train,batch_size=16,num_workers=4,shuffle=True,collate_fn=seq_collate_with_padding)
-    loader_test = DataLoader(dataset_test,batch_size=16,num_workers=4,shuffle=True,collate_fn=seq_collate_with_padding)
+    rag = None
+    embedder = None
+    if route_priors_train is None:
+        print("Initializing RAG System (online route priors)...")
+        rag = TrajectoryDataset_RAG("./dataset/rag_file_7days2", obs_len=args.obs, pred_len=args.preds,
+                                    step=args.preds_step, delim=args.delim).rag_system
+        embedder = TimeSeriesEmbedder()
+    loader_train = DataLoader(
+        dataset_train,
+        batch_size=16,
+        num_workers=4,
+        shuffle=True,
+        collate_fn=seq_collate_with_padding,
+        pin_memory=True,
+        persistent_workers=True,
+        prefetch_factor=2,
+    )
+    loader_test = DataLoader(
+        dataset_test,
+        batch_size=16,
+        num_workers=4,
+        shuffle=True,
+        collate_fn=seq_collate_with_padding,
+        pin_memory=True,
+        persistent_workers=True,
+        prefetch_factor=2,
+    )
 
 
     model = TrajAirNet(args)
@@ -145,7 +188,11 @@ def train():
             tot_batch_count += 1
             batch = [tensor.to(device) for tensor in batch]
 
-            obs_traj , pred_traj, obs_traj_rel, pred_traj_rel, context, seq_start = batch
+            if len(batch) == 7:
+                obs_traj, pred_traj, obs_traj_rel, pred_traj_rel, context, seq_start, route_priors = batch
+            else:
+                obs_traj, pred_traj, obs_traj_rel, pred_traj_rel, context, seq_start = batch
+                route_priors = None
             # 这个也要改，改为在之前就检索，或者之后检索
             all_obs_traj_search_results = []
             all_pred_traj_search_results = []
@@ -157,8 +204,15 @@ def train():
 
             # ####################################DiffusionLOSS######################
             optimizer.zero_grad()
-            loss_dist, loss_uncertainty = model(obs_traj,pred_traj, adj[0],torch.transpose(context,1,2),
-                                  rag_system=rag,embedder=embedder)
+            loss_dist, loss_uncertainty = model(
+                obs_traj,
+                pred_traj,
+                adj[0],
+                torch.transpose(context, 1, 2),
+                route_priors=route_priors,
+                rag_system=rag,
+                embedder=embedder,
+            )
 
         
 
