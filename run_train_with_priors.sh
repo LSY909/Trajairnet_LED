@@ -2,7 +2,6 @@
 #!/bin/bash
 
 ###---------------------使用离线预计算的 route_priors
-
 echo "Running train.py in background (dataset=7days1)..."
 log_file="train_7days1_$(date +%Y%m%d_%H%M%S).log"
 nohup /opt/conda/envs/env_traj/bin/python train.py \

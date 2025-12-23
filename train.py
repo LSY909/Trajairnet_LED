@@ -104,7 +104,7 @@ def train():
 
     # 解析命令行参数
     args=parser.parse_args()
-    os.environ['CUDA_VISIBLE_DEVICES'] = '4'
+    os.environ['CUDA_VISIBLE_DEVICES'] = '5'
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     datapath = os.getcwd() + args.dataset_folder + args.dataset_name + "/processed_data/"
 

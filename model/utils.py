@@ -22,7 +22,7 @@ class TrajectoryDataset(Dataset):
     
     def __init__(
         self, data_dir, obs_len=11, pred_len=120, skip=8,step=10,
-        min_agent=0, delim=' ', route_priors_path: str = None):
+        min_agent=0, delim=' ', route_priors_path: str = None, dense_future_path: str = None):
         """
         Args:
         数据集文件所在目录
@@ -51,11 +51,10 @@ class TrajectoryDataset(Dataset):
         self.delim = delim
         ## 下采样后完整轨迹序列的总长度 math.ceil向上取整
         self.seq_final_len = self.obs_len + int(math.ceil(self.pred_len/self.step))
-        ## 获取数据目录下的所有文件名
-        all_files = os.listdir(self.data_dir)
-        ## 拼接完整文件路径
-        ## os.path.join(a, b)：拼接路径的函数
-        all_files = [os.path.join(self.data_dir, _path) for _path in all_files]
+        ## 获取数据目录下的所有文件名（只保留文件，忽略子目录）
+        all_entries = os.listdir(self.data_dir)
+        # 只保留普通文件，避免尝试打开子目录导致 IsADirectoryError
+        all_files = [os.path.join(self.data_dir, _path) for _path in all_entries if os.path.isfile(os.path.join(self.data_dir, _path))]
         num_agents_in_seq = []
         ## 绝对坐标轨迹序列  相对坐标序列
         seq_list = []
@@ -164,6 +163,13 @@ class TrajectoryDataset(Dataset):
             self.route_priors = ckpt["route_priors"] if isinstance(ckpt, dict) and "route_priors" in ckpt else ckpt
             if len(self.route_priors) != self.num_seq:
                 raise ValueError(f"route_priors length mismatch: {len(self.route_priors)} != {self.num_seq}")
+        # 可选：预计算的 dense future features（与 route_priors 类似的格式）
+        self.dense_future = None
+        if dense_future_path is not None:
+            ckpt2 = torch.load(dense_future_path, map_location='cpu')
+            self.dense_future = ckpt2["dense_future"] if isinstance(ckpt2, dict) and "dense_future" in ckpt2 else ckpt2
+            if len(self.dense_future) != self.num_seq:
+                raise ValueError(f"dense_future length mismatch: {len(self.dense_future)} != {self.num_seq}")
 
     def __len__(self):
         return self.num_seq
@@ -178,6 +184,146 @@ class TrajectoryDataset(Dataset):
             self.obs_traj[start:end, :], self.pred_traj[start:end, :],
             self.obs_traj_rel[start:end, :], self.pred_traj_rel[start:end, :], self.obs_context[start:end, :]
         ]
+        # 如果存在预计算的 route_priors 或 dense_future，将它们并入返回的 context 中（按时间展开并在 channel 维度拼接）
+        # out[4] 为 context: Tensor (num_agents, C_ctx, seq_len)
+        ctx = out[4]
+        seq_len = ctx.size(-1)
+        if self.route_priors is not None:
+            rp = self.route_priors[index]
+            # 转为 tensor
+            rp_t = torch.from_numpy(rp) if isinstance(rp, np.ndarray) else (rp if torch.is_tensor(rp) else torch.tensor(rp))
+            # 期望 rp_t 为 (num_agents, rp_dim) 或 (rp_dim,)
+            # 规范化 rp_t 的形状：
+            # 支持: 0D/1D/2D/3D 输入，最终目标为 (num_agents, rp_dim, seq_len)
+            if rp_t.dim() == 0:
+                # scalar -> (1,1)
+                rp_t = rp_t.unsqueeze(0).unsqueeze(0)
+            if rp_t.dim() == 1:
+                # 全序列通用 priors，重复为每个 agent -> (num_agents, rp_dim)
+                rp_t = rp_t.unsqueeze(0).repeat(ctx.size(0), 1)
+            # 此时 rp_t 应为 2D 或 3D；先确保第0维与 agent 数匹配
+            if rp_t.size(0) != ctx.size(0):
+                if rp_t.size(0) > ctx.size(0):
+                    rp_t = rp_t[:ctx.size(0)]
+                else:
+                    rp_t = rp_t.repeat(int((ctx.size(0) + rp_t.size(0) - 1) / rp_t.size(0)), 1)[:ctx.size(0)]
+            # 根据维度展开到时间维度，目标形状 (num_agents, rp_dim, seq_len)
+            def to_time_tensor(tensor, name="route_priors"):
+                # 先压缩单例维度，便于推断
+                t = tensor.squeeze()
+                # 处理低维情况
+                if t.dim() == 0:
+                    t = t.unsqueeze(0).unsqueeze(0)  # (1,1)
+                if t.dim() == 1:
+                    # (rp_dim,) -> (num_agents, rp_dim)
+                    t = t.unsqueeze(0).repeat(ctx.size(0), 1)
+                if t.dim() == 2:
+                    # (num_agents, rp_dim) -> (num_agents, rp_dim, seq_len)
+                    return t.unsqueeze(-1).repeat(1, 1, seq_len)
+                # 处理 >=3 维：尝试寻找 agent 轴（等于 ctx.size(0)）和 time 轴（等于 seq_len）
+                dims = list(t.size())
+                agent_axis = None
+                seq_axis = None
+                for i, s in enumerate(dims):
+                    if s == ctx.size(0) and agent_axis is None:
+                        agent_axis = i
+                    if s == seq_len and seq_axis is None:
+                        seq_axis = i
+                # 如果没有找到 agent 轴，且第一轴为1，则将其视为可挤压的批次轴后再查找
+                if agent_axis is None and dims[0] == 1 and t.dim() > 1:
+                    t = t.squeeze(0)
+                    dims = list(t.size())
+                    for i, s in enumerate(dims):
+                        if s == ctx.size(0):
+                            agent_axis = i
+                # 默认把最后一轴视为时间轴（如果未匹配到）
+                if seq_axis is None:
+                    seq_axis = len(dims) - 1
+                # 如果仍未找到 agent_axis，我们将把第0轴视为 agent（后续会广播/截断）
+                if agent_axis is None:
+                    agent_axis = 0
+                # 重新计算 dims（因为可能 squeeze 了）
+                dims = list(t.size())
+                # 构建新的轴顺序：agent_axis, middle axes..., seq_axis
+                middle_axes = [i for i in range(len(dims)) if i not in (agent_axis, seq_axis)]
+                perm = [agent_axis] + middle_axes + [seq_axis]
+                try:
+                    t_perm = t.permute(*perm)
+                except Exception:
+                    raise ValueError(f"Cannot permute {name} with original shape {list(tensor.size())} to match (agents, feat, time)")
+                # 将中间维度展平成 feat 维
+                if t_perm.dim() > 3:
+                    t_perm = t_perm.reshape(t_perm.size(0), -1, t_perm.size(-1))
+                # 如果 agent 数不匹配，裁剪或重复以匹配 ctx.size(0)
+                if t_perm.size(0) != ctx.size(0):
+                    if t_perm.size(0) > ctx.size(0):
+                        t_perm = t_perm[:ctx.size(0)]
+                    else:
+                        times_rep = int((ctx.size(0) + t_perm.size(0) - 1) / t_perm.size(0))
+                        t_perm = t_perm.repeat(times_rep, 1, 1)[:ctx.size(0)]
+                # 最后确保时间维长度为 seq_len
+                if t_perm.size(2) != seq_len:
+                    times = int((seq_len + t_perm.size(2) - 1) / t_perm.size(2))
+                    t_perm = t_perm.repeat(1, 1, times)[:, :, :seq_len]
+                return t_perm
+
+            rp_time = to_time_tensor(rp_t, name="route_priors").to(dtype=ctx.dtype, device=ctx.device)
+            ctx = torch.cat([ctx, rp_time], dim=1)
+        if self.dense_future is not None:
+            df = self.dense_future[index]
+            df_t = torch.from_numpy(df) if isinstance(df, np.ndarray) else (df if torch.is_tensor(df) else torch.tensor(df))
+            # 与 route_priors 相同的稳健处理：支持 0D/1D/2D/3D 输入
+            # 使用与 route_priors 相同的通用转换函数
+            def to_time_tensor_shared(tensor, name="dense_future"):
+                t = tensor.squeeze()
+                if t.dim() == 0:
+                    t = t.unsqueeze(0).unsqueeze(0)
+                if t.dim() == 1:
+                    t = t.unsqueeze(0).repeat(ctx.size(0), 1)
+                if t.dim() == 2:
+                    return t.unsqueeze(-1).repeat(1, 1, seq_len)
+                dims = list(t.size())
+                agent_axis = None
+                seq_axis = None
+                for i, s in enumerate(dims):
+                    if s == ctx.size(0) and agent_axis is None:
+                        agent_axis = i
+                    if s == seq_len and seq_axis is None:
+                        seq_axis = i
+                if agent_axis is None and dims[0] == 1 and t.dim() > 1:
+                    t = t.squeeze(0)
+                    dims = list(t.size())
+                    for i, s in enumerate(dims):
+                        if s == ctx.size(0):
+                            agent_axis = i
+                if seq_axis is None:
+                    seq_axis = len(dims) - 1
+                if agent_axis is None:
+                    agent_axis = 0
+                dims = list(t.size())
+                middle_axes = [i for i in range(len(dims)) if i not in (agent_axis, seq_axis)]
+                perm = [agent_axis] + middle_axes + [seq_axis]
+                try:
+                    t_perm = t.permute(*perm)
+                except Exception:
+                    raise ValueError(f"Cannot permute {name} with original shape {list(tensor.size())} to match (agents, feat, time)")
+                if t_perm.dim() > 3:
+                    t_perm = t_perm.reshape(t_perm.size(0), -1, t_perm.size(-1))
+                if t_perm.size(0) != ctx.size(0):
+                    if t_perm.size(0) > ctx.size(0):
+                        t_perm = t_perm[:ctx.size(0)]
+                else:
+                        times_rep = int((ctx.size(0) + t_perm.size(0) - 1) / t_perm.size(0))
+                        t_perm = t_perm.repeat(times_rep, 1, 1)[:ctx.size(0)]
+                if t_perm.size(2) != seq_len:
+                    times = int((seq_len + t_perm.size(2) - 1) / t_perm.size(2))
+                    t_perm = t_perm.repeat(1, 1, times)[:, :, :seq_len]
+                return t_perm
+
+            df_time = to_time_tensor_shared(df_t, name="dense_future").to(dtype=ctx.dtype, device=ctx.device)
+            ctx = torch.cat([ctx, df_time], dim=1)
+        out[4] = ctx
+        # 保持向后兼容：仍然在数据项中包含原始 route_priors（部分代码依赖）
         if self.route_priors is not None:
             out.append(self.route_priors[index])
         return out
@@ -513,7 +659,16 @@ def seq_collate(data):
     pred_traj = torch.stack(new_pred_seq_list, dim=0)
     obs_traj_rel = torch.stack(new_obs_seq_rel_list, dim=0)
     pred_traj_rel = torch.stack(new_pred_seq_rel_list, dim=0)
-    context = torch.stack(new_context_list, dim=0)
+    # 确保所有 context 在 channel 维度一致：对较小的 channel 用 0 填充到最大 channel 数
+    max_c = max([t.size(1) for t in new_context_list]) if len(new_context_list) > 0 else 0
+    padded_context_list = []
+    for t in new_context_list:
+        if t.size(1) < max_c:
+            pad_c = max_c - t.size(1)
+            pad = torch.zeros(t.size(0), pad_c, t.size(2), dtype=t.dtype, device=t.device)
+            t = torch.cat([t, pad], dim=1)
+        padded_context_list.append(t)
+    context = torch.stack(padded_context_list, dim=0)
 
     out = [
         obs_traj, pred_traj, obs_traj_rel, pred_traj_rel, context, seq_start_end
@@ -522,19 +677,6 @@ def seq_collate(data):
 
 ## 打包数据批次（带有扩展）
 def seq_collate_with_padding(data):
-    """
-    Collate function for DataLoader with sequence padding for multiple agents.
-    Ensures each scene has exactly `padding_num` agents by truncating or repeating agents.
-    Avoids modifying the original tuples.
-
-    Args:
-        data: list of dataset items, each item is a tuple:
-              (obs_seq, pred_seq, obs_seq_rel, pred_seq_rel, context)
-
-    Returns:
-        Tuple of stacked tensors:
-        (obs_traj, pred_traj, obs_traj_rel, pred_traj_rel, context, seq_start_end)
-    """
     padding_num = 7  # 最大智能体数量
 
     # 解包 batch 数据（兼容可选 route_priors）
@@ -603,7 +745,16 @@ def seq_collate_with_padding(data):
     pred_traj = torch.stack(new_pred_seq_list, dim=0)
     obs_traj_rel = torch.stack(new_obs_seq_rel_list, dim=0)
     pred_traj_rel = torch.stack(new_pred_seq_rel_list, dim=0)
-    context = torch.stack(new_context_list, dim=0)
+    # 确保所有 context 在 channel 维度一致：对较小的 channel 用 0 填充到最大 channel 数
+    max_c = max([t.size(1) for t in new_context_list]) if len(new_context_list) > 0 else 0
+    padded_context_list = []
+    for t in new_context_list:
+        if t.size(1) < max_c:
+            pad_c = max_c - t.size(1)
+            pad = torch.zeros(t.size(0), pad_c, t.size(2), dtype=t.dtype, device=t.device)
+            t = torch.cat([t, pad], dim=1)
+        padded_context_list.append(t)
+    context = torch.stack(padded_context_list, dim=0)
     ## 观察轨迹、预测轨迹、观察轨迹的相对坐标（前十一个点的相对移动距离）、预测轨迹的相对坐标、上下文、序列开始结束索引（属于哪个场景）
     if has_route_priors:
         route_priors = torch.stack(new_route_priors_list, dim=0)
@@ -618,7 +769,6 @@ def loss_func(recon_y,y,mean,log_var):
     KLD = -0.5 * torch.sum(1 + log_var - mean.pow(2) - log_var.exp())
     return traj_loss + KLD
 
-# 必须得是整体的预测结果，而如果只用最准确目标，损失好像不会降低
 ## 计算所有场景的总误差（min_loss取名不好）
 def loss_func_MSE(recon_y,y):
     min_loss = 0
@@ -626,24 +776,3 @@ def loss_func_MSE(recon_y,y):
         traj_loss = rmse(recon_y[i],y.squeeze())
         min_loss += traj_loss
     return min_loss
-
-# 仿照Sigulartrajectory的写法
-# def loss_func_MSE(recon_y,y):
-#     recon_y = recon_y.permute(0,2,1)
-#     y = y.permute(0,2,1)
-#     error_displacement = (recon_y - y.unsqueeze(dim=0)).norm(p=2, dim=-1)
-#     min_loss = error_displacement.mean(dim=-1).min(dim=0)[0].mean()
-#     # (pred_traj_recon - pred_traj.unsqueeze(dim=0)).norm(p=2, dim=-1)
-#     # for i in range(recon_y.shape[0]):
-#     #     traj_loss = rmse(recon_y[i],y.squeeze())
-#     #     min_loss += traj_loss
-#     return min_loss
-
-# def loss_func_MSE(recon_y,y):
-#     min_loss = float('inf')
-#     for i in range(recon_y.shape[0]):
-#         traj_loss = rmse(recon_y[i],y.squeeze())
-#         if min_loss >= traj_loss:
-#             min_loss = traj_loss
-#     return min_loss
-

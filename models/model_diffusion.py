@@ -28,11 +28,6 @@ class st_encoder(nn.Module):
         nn.init.zeros_(self.temporal_encoder.bias_hh_l0)
 
     def forward(self, X):
-        '''
-        X: b, T, 2
-
-        return: b, F
-        '''
         X_t = torch.transpose(X, 1, 2)
         X_after_spatial = self.relu(self.spatial_conv(X_t))
         X_embed = torch.transpose(X_after_spatial, 1, 2)
@@ -66,7 +61,7 @@ class social_transformer(nn.Module):
 ## 扩散模型
 class TransformerDenoisingModel(Module):
 
-    def __init__(self, context_dim=256, tf_layer=2):
+    def __init__(self, context_dim=256, tf_layer=2, route_priors_dim=0, dense_future_dim=0):
         super().__init__()
         self.encoder_context = social_transformer()
         self.pos_emb = PositionalEncoding(d_model=2*context_dim, dropout=0.1, max_len=24)
@@ -77,21 +72,39 @@ class TransformerDenoisingModel(Module):
         self.concat3 = ConcatSquashLinear(2*context_dim,context_dim,context_dim+3)
         self.concat4 = ConcatSquashLinear(context_dim,context_dim//2,context_dim+3)
         self.linear = ConcatSquashLinear(context_dim//2, 3, context_dim+3)
+        # optional projections to fold external priors/dense features into encoder context
+        self.context_dim = context_dim
+        if route_priors_dim and route_priors_dim > 0:
+            self.route_priors_proj = nn.Linear(route_priors_dim, context_dim)
+        else:
+            self.route_priors_proj = None
+        if dense_future_dim and dense_future_dim > 0:
+            self.dense_future_proj = nn.Linear(dense_future_dim, context_dim)
+        else:
+            self.dense_future_proj = None
+        
 
 
-        # self.concat1 = ConcatSquashLinear(2, 2*context_dim, context_dim+3)
-        # self.layer = nn.TransformerEncoderLayer(d_model=2*context_dim, nhead=2, dim_feedforward=2*context_dim)
-        # self.transformer_encoder = nn.TransformerEncoder(self.layer, num_layers=tf_layer)
-        # self.concat3 = ConcatSquashLinear(2*context_dim,context_dim,context_dim+3)
-        # self.concat4 = ConcatSquashLinear(context_dim,context_dim//2,context_dim+3)
-        # self.linear = ConcatSquashLinear(context_dim//2, 2, context_dim+3)
-
-
-    def forward(self, x, beta, context, mask):
+    def forward(self, x, beta, context, mask, route_priors=None, dense_future_feat=None):
         batch_size = x.size(0)
         beta = beta.view(batch_size, 1, 1)          # (B, 1, 1)
         mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
         context = self.encoder_context(context, mask)
+        # expected shapes:
+        #  - route_priors: (B, 1, route_priors_dim) or (B, route_priors_dim)
+        #  - dense_future_feat: (B, 1, dense_future_dim) or (B, dense_future_dim)
+        if route_priors is not None and self.route_priors_proj is not None:
+            rp = route_priors
+            if rp.dim() == 2:
+                rp = rp.unsqueeze(1)
+            rp_proj = self.route_priors_proj(rp)  # -> (B,1,context_dim)
+            context = context + rp_proj
+        if dense_future_feat is not None and self.dense_future_proj is not None:
+            df = dense_future_feat
+            if df.dim() == 2:
+                df = df.unsqueeze(1)
+            df_proj = self.dense_future_proj(df)  # -> (B,1,context_dim)
+            context = context + df_proj
         # context = context.view(batch_size, 1, -1)   # (B, 1, F)
 
         time_emb = torch.cat([beta, torch.sin(beta), torch.cos(beta)], dim=-1)  # (B, 1, 3)
@@ -106,7 +119,7 @@ class TransformerDenoisingModel(Module):
         trans = self.concat4(ctx_emb, trans)
         return self.linear(ctx_emb, trans)
     
-    def generate_accelerate(self, x, beta, context, mask):
+    def generate_accelerate(self, x, beta, context, mask, route_priors=None, dense_future_feat=None):
         #pdb.set_trace()
 
         batch_size = x.size(0)
@@ -116,7 +129,23 @@ class TransformerDenoisingModel(Module):
         beta = beta.view(beta.size(0), 1, 1)          # (B, 1, 1)
         mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
         context = self.encoder_context(context, mask)
-        # context = context.view(batch_size, 1, -1)   # (B, 1, F)
+        # integrate priors/dense features into context (mirror forward)
+        if route_priors is not None and self.route_priors_proj is not None:
+            rp = route_priors
+            if rp.dim() == 2:
+                rp = rp.unsqueeze(1)
+            if rp.dim() == 3 and rp.size(1) != 1:
+                rp = rp.mean(dim=1, keepdim=True)
+            rp_proj = self.route_priors_proj(rp)  # -> (B,1,context_dim)
+            context = context + rp_proj
+        if dense_future_feat is not None and self.dense_future_proj is not None:
+            df = dense_future_feat
+            if df.dim() == 2:
+                df = df.unsqueeze(1)
+            if df.dim() == 3 and df.size(1) != 1:
+                df = df.mean(dim=1, keepdim=True)
+            df_proj = self.dense_future_proj(df)  # -> (B,1,context_dim)
+            context = context + df_proj
         #pdb.set_trace()
         time_emb = torch.cat([beta, torch.sin(beta), torch.cos(beta)], dim=-1)  # (B, 1, 3)
         # time_emb: [11, 1, 3]
@@ -130,7 +159,6 @@ class TransformerDenoisingModel(Module):
         final_emb = self.pos_emb(final_emb)
         
         trans = self.transformer_encoder(final_emb).permute(1, 0, 2).contiguous().view(-1, sample_num, points_num, 512)
-        # 问题不是这里final_emb的维度错误
         # trans = self.transformer_encoder(final_emb).permute(1, 0, 2).contiguous().view(-1, 10, 15, 512)
         # trans: 11【智能体数量】, 10【batch_size】, 20, 512
         trans = self.concat3.batch_generate(ctx_emb, trans)

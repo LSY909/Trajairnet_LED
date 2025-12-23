@@ -36,10 +36,6 @@ class TrajAirNet(nn.Module):
 
         graph_hidden = args.graph_hidden
 
-        # 原始参数
-        # gat_in = n_classes*args.obs
-        # gat_out = n_classes*args.obs
-
         gat_in = n_classes * args.obs + n_classes ** 2
         gat_out = n_classes * args.obs + n_classes ** 2
 
@@ -71,8 +67,6 @@ class TrajAirNet(nn.Module):
 
         cfg = DotDict({'scheduler': 'ddim', 'steps': 10, 'beta_start': 1.e-4, 'beta_end': 5.e-2, 'beta_schedule': 'linear',
                        'k': args.k, 's': args.num_samples})
-        # self.diffuison = CoreDenoisingModel(cfg=cfg).cuda()
-        # eps_theta = self.model(cur_y, beta, x, mask)
 
         self.context_conv = nn.Conv1d(in_channels=5, out_channels=4, kernel_size=args.cnn_kernels)
         self.context_linear = nn.Linear(11, args.num_context_output_c)
@@ -159,7 +153,7 @@ class TrajAirNet(nn.Module):
                 for r in rel
             ])
         else:
-            # per_batch：整个 batch 只拟合一次 GMM（快很多）
+            # per_batch：整个 batch 只拟合一次 GMM
             gmm = GaussianMixture(
                 n_components=self.n_clusters,
                 covariance_type='diag',
@@ -213,25 +207,27 @@ class TrajAirNet(nn.Module):
         for i in range(batch_size):
             traj_mask[i * agent_num:(i + 1) * agent_num, i * agent_num:(i + 1) * agent_num] = 1.
 
-        # DenseFuturePredictor: 输出 (B, A, T, 7)，我们只用前两维位置作为 mean 的先验
+        # DenseFuturePredictor: 输出 (B, A, T, 11)，我们用前三维位置 (x,y,z) 作为 mean 的先验
         dense_xy_flat = None
         if self.dense_prior_weight > 0:
             obj_pos = x[:, :, :, -1]  # (B, A, 3)
             obj_mask = torch.ones((batch_size, agent_num), device=x.device, dtype=torch.bool)
             obj_feature = self.model_initializer.ego_mean_encoder(past_traj).view(batch_size, agent_num, -1)  # (B, A, 256)
             _, pred_dense_trajs = self.dense_future_predictor(obj_feature, obj_mask, obj_pos)
-            dense_xy_flat = pred_dense_trajs[..., 0:2].reshape(batch_size * agent_num, pred_dense_trajs.shape[2], 2)
+            # 取前3维 (x,y,z)
+            dense_xy_flat = pred_dense_trajs[..., 0:3].reshape(batch_size * agent_num, pred_dense_trajs.shape[2], 3)
 
         # LED initializer：route_priors 在 initializer 内被编码并影响 mean/var/scale
         sample_prediction, mean_estimation, variance_estimation = self.model_initializer(
             past_traj, traj_mask, route_priors
         )
 
-        # 融合 dense future prior 到 mean_estimation 的前两维 (x,y)
+        # 融合 dense future prior 到 mean_estimation 的前三维 (x,y,z)
         if dense_xy_flat is not None:
             w = self.dense_prior_weight
             mean_estimation = mean_estimation.clone()
-            mean_estimation[:, :, 0:2] = (1.0 - w) * mean_estimation[:, :, 0:2] + w * dense_xy_flat
+            # 融合前三维 (x,y,z)
+            mean_estimation[:, :, 0:3] = (1.0 - w) * mean_estimation[:, :, 0:3] + w * dense_xy_flat
         sample_prediction = torch.exp(variance_estimation / 2)[
                                 ..., None, None] * sample_prediction / sample_prediction.std(dim=1).mean(dim=(1, 2))[:,
                                                                        None, None, None]
@@ -294,14 +290,14 @@ class TrajAirNet(nn.Module):
             obj_mask = torch.ones((batch_size, agent_num), device=x.device, dtype=torch.bool)
             obj_feature = self.model_initializer.ego_mean_encoder(past_traj).view(batch_size, agent_num, -1)
             _, pred_dense_trajs = self.dense_future_predictor(obj_feature, obj_mask, obj_pos)
-            dense_xy_flat = pred_dense_trajs[..., 0:2].reshape(batch_size * agent_num, pred_dense_trajs.shape[2], 2)
+            dense_xy_flat = pred_dense_trajs[..., 0:3].reshape(batch_size * agent_num, pred_dense_trajs.shape[2], 3)
 
         sample_prediction, mean_estimation, variance_estimation = self.model_initializer(past_traj, traj_mask, route_priors)
 
         if dense_xy_flat is not None:
             w = self.dense_prior_weight
             mean_estimation = mean_estimation.clone()
-            mean_estimation[:, :, 0:2] = (1.0 - w) * mean_estimation[:, :, 0:2] + w * dense_xy_flat
+            mean_estimation[:, :, 0:3] = (1.0 - w) * mean_estimation[:, :, 0:3] + w * dense_xy_flat
         # 对应论文框架图相乘部分内容
         sample_prediction = torch.exp(variance_estimation / 2)[
                                 ..., None, None] * sample_prediction / sample_prediction.std(dim=1).mean(dim=(1, 2))[:,

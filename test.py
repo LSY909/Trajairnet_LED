@@ -63,7 +63,7 @@ def main():
 
 
     ##Select device
-    os.environ['CUDA_VISIBLE_DEVICES'] = '4'
+    os.environ['CUDA_VISIBLE_DEVICES'] = '5'
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     ##Load data

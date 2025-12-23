@@ -18,4 +18,4 @@ git reset --hard <备份的ID点>
 
 python git_sync.py "BACKUP: 添加IAD和MTR前的备份"
 
-python git_sync.py "FEATURE: 添加dense future prediction"
+python git_sync.py "FEATURE: add dense future prediction"  python git_sync.py "BACKUP: 消融实验前的备份"
